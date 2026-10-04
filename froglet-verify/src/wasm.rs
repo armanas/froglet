@@ -28,7 +28,8 @@ pub fn verify_document_json(document_json: &str, now_unix: Option<f64>) -> Strin
 
 /// Verify a set of artifact documents and the full chain they form. Accepts
 /// the same shapes as the CLI: a single artifact, an array, or an
-/// `{"artifacts": [...]}` page. Returns the `ChainDocumentsReport` as JSON.
+/// `{"artifacts": [...]}` page, including a node's `/v1/feed` page as served.
+/// Returns the `ChainDocumentsReport` as JSON.
 #[wasm_bindgen]
 pub fn validate_chain_json(documents_json: &str, now_unix: Option<f64>) -> String {
     let input: serde_json::Value = match serde_json::from_str(documents_json) {

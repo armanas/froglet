@@ -23,6 +23,8 @@ type Dataset = BTreeMap<String, Vec<Map<String, Value>>>;
 pub struct PrepareRequest {
     pub source: PathBuf,
     #[serde(default)]
+    pub file: Option<FileOptions>,
+    #[serde(default)]
     pub destination: Option<PathBuf>,
     #[serde(default)]
     pub service_id: Option<String>,
@@ -34,6 +36,22 @@ pub struct PrepareRequest {
     pub csv_columns: Vec<PublicationCsvColumn>,
     #[serde(default)]
     pub example_input: Option<Value>,
+    #[serde(default)]
+    pub research_profile: Option<crate::research_profile::ResearchProfile>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileOptions {
+    pub filename: String,
+    #[serde(default = "file_media_type")]
+    pub media_type: String,
+    pub expires_at: i64,
+    pub max_downloads: u64,
+    pub max_transfer_bytes: u64,
+}
+fn file_media_type() -> String {
+    "application/octet-stream".into()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -85,7 +103,15 @@ fn bad(message: impl Into<String>) -> CliError {
 }
 
 fn bounded_read(path: &Path) -> Result<Vec<u8>, CliError> {
-    let meta = fs::symlink_metadata(path)?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
     if !meta.is_file() || meta.file_type().is_symlink() {
         return Err(bad(
             "source must be a regular file, not a directory or symlink",
@@ -97,13 +123,24 @@ fn bounded_read(path: &Path) -> Result<Vec<u8>, CliError> {
         ));
     }
     let mut bytes = Vec::new();
-    fs::File::open(path)?
-        .take((MAX_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
+    file.take((MAX_BYTES + 1) as u64).read_to_end(&mut bytes)?;
     if bytes.len() > MAX_BYTES {
         return Err(bad("source grew past the 16 MiB preparation limit"));
     }
     Ok(bytes)
+}
+
+fn request_fingerprint(request: &PrepareRequest) -> Result<String, CliError> {
+    if request.file.is_some() {
+        crate::file_download::read_regular(
+            &request.source,
+            froglet_protocol::file_download::MAX_FILE_BYTES,
+        )
+        .map(crate::crypto::sha256_hex)
+        .map_err(bad)
+    } else {
+        source_fingerprint(&request.source)
+    }
 }
 
 fn source_fingerprint(path: &Path) -> Result<String, CliError> {
@@ -131,17 +168,29 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
         return Err(bad("source must be an absolute path"));
     }
     // Reject a symlink before canonicalization, which would hide that fact.
-    let source_hash = source_fingerprint(&request.source)?;
+    let source_hash = request_fingerprint(&request)?;
     request.source = request.source.canonicalize()?;
-    let wasm = matches!(extension(&request.source), "wat" | "wasm");
-    let (original, description) = if wasm {
+    let file_share = request.file.is_some();
+    let wasm = !file_share && matches!(extension(&request.source), "wat" | "wasm");
+    if let Some(profile) = &request.research_profile {
+        profile.validate().map_err(bad)?;
+        if wasm || file_share {
+            return Err(bad(
+                "research_profile currently requires a selected-data snapshot",
+            ));
+        }
+    }
+    if file_share && (!request.selection.is_empty() || !request.csv_columns.is_empty()) {
+        return Err(bad("file sharing cannot also select query fields"));
+    }
+    let (original, description) = if wasm || file_share {
         (BTreeMap::new(), json!({}))
     } else {
         read_dataset(&request)?
     };
     if request.destination.is_none()
         || request.service_id.is_none()
-        || (!wasm && request.selection.is_empty())
+        || (!wasm && !file_share && request.selection.is_empty())
     {
         return Ok(
             json!({"status":"decision_required", "stage":"select_data", "collections":description,
@@ -218,7 +267,51 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
     let staging = parent.join(format!(".froglet-prepare-{:016x}", rand::random::<u64>()));
     private_dir(&staging)?;
     let _cleanup = Staging(staging.clone());
-    let (snapshot, example_input, example_result, included, omitted) = if wasm {
+    let (snapshot, example_input, example_result, included, omitted) = if let Some(options) =
+        request.file.as_ref()
+    {
+        let bytes = crate::file_download::read_regular(
+            &request.source,
+            froglet_protocol::file_download::MAX_FILE_BYTES,
+        )
+        .map_err(bad)?;
+        let metadata = froglet_protocol::file_download::FileMetadata {
+            filename: options.filename.clone(),
+            media_type: options.media_type.clone(),
+            size_bytes: bytes.len() as u64,
+            sha256: crate::crypto::sha256_hex(&bytes),
+            expires_at: options.expires_at,
+            max_downloads: options.max_downloads,
+            max_transfer_bytes: options.max_transfer_bytes,
+        };
+        let now = crate::settlement::current_unix_timestamp();
+        if metadata.expires_at <= now || metadata.expires_at > now.saturating_add(30 * 86400) {
+            return Err(bad("file expiry must be in the next 30 days"));
+        }
+        let package = froglet_protocol::file_download::encode(&metadata, &bytes).map_err(bad)?;
+        // Bound preparation history independently of the provider's snapshot quota.
+        let mut retained = 0u64;
+        if destination.is_dir() {
+            for e in fs::read_dir(&destination)? {
+                let e = e?;
+                if e.path().extension().is_some_and(|v| v == "file") {
+                    retained = retained.saturating_add(e.metadata()?.len());
+                }
+            }
+        }
+        if retained.saturating_add(package.len() as u64) > 64 * 1024 * 1024 {
+            return Err(bad(
+                "prepared file history exceeds 64 MiB; remove unused local snapshots first",
+            ));
+        }
+        (
+            package,
+            json!({"action":"describe"}),
+            json!(metadata),
+            json!({"filename":metadata.filename,"size_bytes":metadata.size_bytes}),
+            json!([]),
+        )
+    } else if wasm {
         let input = request
             .example_input
             .clone()
@@ -238,6 +331,9 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
         (bytes, input, result, json!([]), json!([]))
     } else {
         let selected = select(&original, &request.selection, &description)?;
+        if let Some(profile) = &request.research_profile {
+            profile.validate_rows(&selected).map_err(bad)?;
+        }
         let bytes = serde_json::to_vec(&selected).map_err(|e| bad(e.to_string()))?;
         if bytes.len() > MAX_BYTES {
             return Err(bad("selected snapshot exceeds 16 MiB"));
@@ -284,7 +380,7 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
             json!(omitted),
         )
     };
-    if source_fingerprint(&request.source)? != source_hash {
+    if request_fingerprint(&request)? != source_hash {
         return Err(bad(
             "source_changed: source changed while preparing; retry after saving it",
         ));
@@ -292,10 +388,18 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
     let snapshot_hash = crate::crypto::sha256_hex(&snapshot);
     let snapshot_file = format!(
         "snapshot-{snapshot_hash}.{}",
-        if wasm { "wasm" } else { "json" }
+        if wasm {
+            "wasm"
+        } else if file_share {
+            "file"
+        } else {
+            "json"
+        }
     );
     let summary = request.summary.clone().unwrap_or_else(|| {
-        if wasm {
+        if file_share {
+            format!("Download {}", request.file.as_ref().unwrap().filename)
+        } else if wasm {
             format!("Run the {service_id} function")
         } else {
             format!(
@@ -319,13 +423,34 @@ pub async fn prepare(mut request: PrepareRequest, state_root: &Path) -> Result<V
     } else {
         manifest["runtime"] = json!("builtin");
         manifest["package_kind"] = json!("builtin");
-        manifest["contract_version"] = json!("froglet.builtin.data_query.json.v1");
-        manifest["data"] = json!({"path":snapshot_file, "format":"json"});
+        manifest["contract_version"] = json!(if file_share {
+            froglet_protocol::file_download::CONTRACT
+        } else {
+            "froglet.builtin.data_query.json.v1"
+        });
+        manifest["data"] =
+            json!({"path":snapshot_file, "format":if file_share {"file"} else {"json"}});
     }
     // `starter` is already part of the public, signed service metadata and
     // publication consent. Keep it distinct from the private verification input.
     manifest["starter"] =
         json!(serde_json::to_string(&example_input).map_err(|e| bad(e.to_string()))?);
+    if let Some(profile) = &request.research_profile {
+        let collections = request
+            .selection
+            .iter()
+            .map(|(name, fields)| {
+                let mut fields = fields.clone();
+                fields.sort();
+                (name.clone(), fields)
+            })
+            .collect();
+        let mut schema = crate::builtins::data_query::data_query_output_schema(&collections);
+        schema[crate::research_profile::ANNOTATION] =
+            serde_json::to_value(profile).map_err(|error| bad(error.to_string()))?;
+        manifest["output_schema_json"] =
+            json!(serde_json::to_string(&schema).map_err(|error| bad(error.to_string()))?);
+    }
     let manifest_text = toml::to_string_pretty(&manifest).map_err(|e| bad(e.to_string()))?;
     froglet_protocol::manifest::ServiceManifest::from_toml(&manifest_text)?;
     let record = Preparation {
@@ -730,7 +855,7 @@ fn verify_generated_files(project: &Path, record: &Preparation) -> Result<(), Cl
 pub(crate) fn check_prepared_source(project: &Path) -> Result<(), CliError> {
     if let Some(record) = read_preparation(project)? {
         verify_generated_files(project, &record)?;
-        if source_fingerprint(&record.request.source)? != record.source_sha256 {
+        if request_fingerprint(&record.request)? != record.source_sha256 {
             return Err(bad(
                 "source_changed: prepare the updated service and review its new publication plan; the published version is unchanged",
             ));
@@ -778,7 +903,7 @@ pub fn check_updates(state_root: &Path) -> Result<Value, CliError> {
                 "next_action":"The prepared project or its private record is missing, unreadable, or edited. Keep any edits and prepare into a new directory; the published revision is unchanged."}));
             continue;
         };
-        let status = match source_fingerprint(&record.request.source) {
+        let status = match request_fingerprint(&record.request) {
             Ok(hash) if hash == record.source_sha256 => "current",
             Ok(_) => "update_available",
             Err(CliError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => "source_missing",
@@ -851,6 +976,7 @@ mod tests {
     use super::*;
     fn request(root: &Path, source: &str) -> PrepareRequest {
         PrepareRequest {
+            file: None,
             source: root.join(source),
             destination: Some(root.join("service")),
             service_id: Some("catalog".into()),
@@ -858,8 +984,102 @@ mod tests {
             selection: BTreeMap::from([("rows".into(), vec!["id".into(), "name".into()])]),
             csv_columns: vec![],
             example_input: None,
+            research_profile: None,
         }
     }
+    #[tokio::test]
+    async fn selected_research_profile_survives_manifest_without_private_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(
+            root.join("catalog.json"),
+            br#"[{"id":1,"name":"Apple","secret":"excluded"}]"#,
+        )
+        .unwrap();
+        let mut req = request(root, "catalog.json");
+        req.research_profile = Some(serde_json::from_value(json!({
+            "schema_version":"froglet.research-profile/v1",
+            "collections":{"rows":{"fields":{
+                "id":{"type":"integer","nullable":false,"unit":"none"},
+                "name":{"type":"string","nullable":false,"unit":"none"}}}},
+            "provenance":{"source":"urn:synthetic:produce","version":"1","citation":"Synthetic fixture","license":"Apache-2.0"}
+        })).unwrap());
+        prepare(req.clone(), &root.join("state")).await.unwrap();
+        let (manifest, _) = froglet_protocol::manifest::ServiceManifest::from_toml(
+            &fs::read_to_string(root.join("service/froglet-service.toml")).unwrap(),
+        )
+        .unwrap();
+        let schema = manifest.output_schema.unwrap();
+        assert_eq!(
+            schema[crate::research_profile::ANNOTATION],
+            serde_json::to_value(req.research_profile.as_ref().unwrap()).unwrap()
+        );
+        assert_eq!(
+            schema["x-froglet-collections"]["rows"],
+            json!(["id", "name"])
+        );
+        assert!(!serde_json::to_string(&schema).unwrap().contains("secret"));
+        req.research_profile
+            .as_mut()
+            .unwrap()
+            .collections
+            .get_mut("rows")
+            .unwrap()
+            .fields
+            .get_mut("id")
+            .unwrap()
+            .kind = "string".into();
+        assert!(
+            prepare(req, &root.join("state"))
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("type mismatch")
+        );
+        // A failed re-preparation leaves the accepted manifest unchanged.
+        let (unchanged, _) = froglet_protocol::manifest::ServiceManifest::from_toml(
+            &fs::read_to_string(root.join("service/froglet-service.toml")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(unchanged.output_schema.unwrap(), schema);
+    }
+
+    #[tokio::test]
+    async fn prepares_download_snapshot_and_rejects_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("input.sqlite"), b"raw file bytes").unwrap();
+        let mut req = request(root, "input.sqlite");
+        req.selection.clear();
+        req.file = Some(FileOptions {
+            filename: "export.sqlite".into(),
+            media_type: "application/octet-stream".into(),
+            expires_at: crate::settlement::current_unix_timestamp() + 3600,
+            max_downloads: 2,
+            max_transfer_bytes: 100,
+        });
+        let output = prepare(req.clone(), &root.join("state")).await.unwrap();
+        assert_eq!(output["status"], "prepared");
+        let (manifest, _) = froglet_protocol::manifest::ServiceManifest::from_toml(
+            &fs::read_to_string(root.join("service/froglet-service.toml")).unwrap(),
+        )
+        .unwrap();
+        let snapshot = root.join("service").join(&manifest.data.unwrap().path);
+        let package = fs::read(&snapshot).unwrap();
+        let (metadata, bytes) = froglet_protocol::file_download::decode(&package).unwrap();
+        assert_eq!(metadata.filename, "export.sqlite");
+        assert_eq!(bytes, b"raw file bytes");
+        fs::write(root.join("input.sqlite"), b"changed").unwrap();
+        assert_eq!(fs::read(&snapshot).unwrap(), package);
+        assert!(check_prepared_source(&root.join("service")).is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("input.sqlite"), root.join("link")).unwrap();
+            req.source = root.join("link");
+            assert!(prepare(req, &root.join("state")).await.is_err());
+        }
+    }
+
     #[tokio::test]
     async fn prepares_only_selected_data_and_detects_changes() {
         let dir = tempfile::tempdir().unwrap();

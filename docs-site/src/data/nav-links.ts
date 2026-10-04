@@ -1,12 +1,11 @@
 export const navLinks = [
-	{ href: '/', label: 'Home', hideOnMobile: true },
-	{ href: '/publish/', label: 'Publish a service' },
+	{ href: '/publish/', label: 'Start sharing' },
+	{ href: '/marketplace/', label: 'Explore services' },
+	{ href: '/managed/', label: 'For organizations' },
+	{ href: '/open-source/', label: 'Developers' },
 	{
 		href: '/docs/',
 		label: 'Docs',
-		activePrefixes: ['/docs/', '/learn/', '/architecture/', '/spec/', '/marketplace/overview/'],
+		activePrefixes: ['/docs/', '/demo/', '/learn/', '/architecture/', '/spec/', '/marketplace/overview/'],
 	},
-	{ href: '/marketplace/', label: 'Marketplace' },
-	{ href: '/managed/', label: 'Managed', hideOnMobile: true },
-	{ href: '/open-source/', label: 'Open source', hideOnMobile: true },
 ] as const;

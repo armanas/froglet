@@ -127,6 +127,11 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 		backdrop-filter: none;
 		-webkit-backdrop-filter: none;
 	}
+	.site-hdr--embedded .inner {
+		box-sizing: border-box;
+		height: var(--sl-nav-height);
+		padding-block: 0;
+	}
 
 	.site-hdr .brand .mark {
 		font-size: 14px;
@@ -177,10 +182,10 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 		}
 	}
 
-	@media (max-width: 760px) {
+	@media (max-width: 900px) {
 		.site-hdr .site-nav-desktop { display: none; }
 		.site-hdr .site-nav-mobile { display: block; margin-left: auto; }
-		.site-nav-mobile > summary { cursor: pointer; min-height: 44px; padding: 12px; color: var(--fg1); }
+		.site-nav-mobile > summary { box-sizing: border-box; cursor: pointer; min-height: 44px; padding: 10px 12px; color: var(--fg1); }
 		.site-hdr .site-nav-mobile nav {
 			position: absolute; top: 100%; right: var(--shell-gut); z-index: 70;
 			display: flex; flex-direction: column; align-items: stretch; gap: 0;
@@ -213,6 +218,11 @@ const isExternal = (item: (typeof navLinks)[number]) =>
 		.site-hdr .right {
 			display: none;
 		}
+	}
+	@media (max-width: 49.999rem) {
+		/* Starlight's documentation sidebar has its own fixed menu control. */
+		[data-has-sidebar] .site-hdr--embedded .inner { padding-right: calc(var(--shell-gut) + 52px); }
+		.sl-menu-button { width: 44px; height: 44px; top: calc((var(--sl-nav-height) - 44px) / 2); z-index: 60; background: var(--bg-elevated); color: var(--fg1); border: 1px solid var(--border); border-radius: var(--r-2); }
 	}
 
 	@media (max-width: 560px) {

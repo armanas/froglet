@@ -1,0 +1,19 @@
+---
+/**
+ * Starlight <head> wrapper. Docs entries that have route-level agent metadata
+ * (see src/data/agent-metadata.ts) get the same agent tags as the custom pages.
+ */
+import Default from '@astrojs/starlight/components/Head.astro';
+import AgentMeta from './AgentMeta.astro';
+import FontPreload from './FontPreload.astro';
+import { routeAgentMetadata } from '../data/agent-metadata';
+
+const { id } = Astro.locals.starlightRoute;
+const routeKey = (Object.keys(routeAgentMetadata) as Array<keyof typeof routeAgentMetadata>).find(
+	(key) => routeAgentMetadata[key].route === `/${id}/`,
+);
+---
+
+<Default {...Astro.props}><slot /></Default>
+<FontPreload />
+{routeKey && <AgentMeta route={routeKey} />}

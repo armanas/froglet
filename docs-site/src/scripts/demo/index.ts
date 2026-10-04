@@ -1,4 +1,4 @@
-// ═══════ Demo page entry point ═══════
+// ═══════ Protocol walkthrough entry point ═══════
 // Initializes whiteboard, terminal, step navigation, keyboard shortcuts,
 // and pip indicators. (Requirements 1.3, 6.1, 6.2, 6.3, 6.4)
 
@@ -140,7 +140,17 @@ export function initDemo(): void {
   }
 
   // ── Keyboard shortcuts (Req 6.1, 6.2, 6.3) ──
-  document.addEventListener('keydown', (e: KeyboardEvent) => {
+  // Scoped to the walkthrough so the arrow keys and Escape never hijack the rest
+  // of the docs page (search box, code blocks, page scrolling). Falls back to the
+  // document when the component root is absent.
+  const keyScope: HTMLElement | Document =
+    document.querySelector<HTMLElement>('[data-walkthrough]') ?? document;
+  keyScope.addEventListener('keydown', (event: Event) => {
+    const e = event as KeyboardEvent;
+    if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    const target = e.target as HTMLElement | null;
+    if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+
     switch (e.key) {
       case 'ArrowRight':
         go(1);

@@ -296,7 +296,14 @@ export function frogletToolParameters(config) {
       max_price_sats: {
         type: "integer",
         minimum: 0,
-        description: "Upper price bound in sats for marketplace_search results."
+        maximum: Number.MAX_SAFE_INTEGER,
+        description: "Per-call upper price bound in sats for invoke_service and run_compute (omitted means 0, free-only). The requester node's cumulative budget and deal cap remain authoritative. Also filters marketplace_search results."
+      },
+      idempotency_key: {
+        type: "string",
+        minLength: 1,
+        maxLength: 128,
+        description: "Optional exact retry identity for invoke_service or run_compute, at most 128 UTF-8 bytes and not whitespace-only. Reuse it unchanged for the same workload/provider on retries. Omission provides no explicit retry identity; do not retry paid work with a new key."
       },
       ...MARKETPLACE_ATTESTATION_PROPERTIES,
       status: {

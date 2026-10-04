@@ -19,14 +19,12 @@ export default defineConfig({
 				disable404Route: true,
 				social: [{ icon: 'github', label: 'GitHub', href: 'https://github.com/armanas/froglet' }],
 			head: [
-				{ tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
-				{ tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: true } },
-				{ tag: 'link', attrs: { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap' } },
 				{ tag: 'link', attrs: { rel: 'icon', href: '/favicon.svg', type: 'image/svg+xml' } },
 			],
 			customCss: ['./src/styles/custom.css'],
 			components: {
 				ThemeProvider: './src/components/ThemeProvider.astro',
+				Head: './src/components/StarlightHead.astro',
 				Header: './src/components/StarlightHeader.astro',
 				Footer: './src/components/StarlightFooter.astro',
 				Sidebar: './src/components/StarlightSidebar.astro',
@@ -36,19 +34,18 @@ export default defineConfig({
 						label: 'Start Here',
 						items: [
 							{ label: 'Docs Home', slug: 'docs' },
-							{ label: 'Try In Cloud', slug: 'learn/cloud-trial' },
+							{ label: 'What Is Froglet?', slug: 'learn/introduction' },
+							{ label: 'Share Data or a Tool', slug: 'learn/share-services' },
 							{ label: 'Run Locally', slug: 'learn/quickstart' },
-							{ label: 'Publish A Service', slug: 'learn/provider-onboarding' },
 							{ label: 'Connect Agents', slug: 'learn/agents' },
-							{ label: 'LLM Install Contract', slug: 'learn/llm-self-install' },
-							{ label: 'Plugin Distribution', slug: 'learn/plugin-distribution' },
-							{ label: 'Payment Rails', slug: 'learn/payment-rails' },
+							{ label: 'MCP & A2A Compute', slug: 'learn/agent-interoperability' },
+							{ label: 'Hosted Trial Status', slug: 'learn/cloud-trial' },
 						],
 					},
 					{
 						label: 'Concepts',
 						items: [
-							{ label: 'Protocol Overview', slug: 'learn/introduction' },
+							{ label: 'Protocol Walkthrough', slug: 'demo' },
 							{ label: 'Identity', slug: 'learn/identity' },
 							{ label: 'Deal Flow', slug: 'learn/deal-flow' },
 							{ label: 'Settlement', slug: 'learn/settlement' },
@@ -59,6 +56,10 @@ export default defineConfig({
 					{
 						label: 'Reference',
 						items: [
+							{ label: 'Provider Setup', slug: 'learn/provider-onboarding' },
+							{ label: 'LLM Install Contract', slug: 'learn/llm-self-install' },
+							{ label: 'Plugin Distribution', slug: 'learn/plugin-distribution' },
+							{ label: 'Payment Rails', slug: 'learn/payment-rails' },
 							{ label: 'Marketplace', slug: 'marketplace/overview' },
 							{ label: 'Kernel', slug: 'spec/kernel' },
 							{ label: 'Conformance', slug: 'spec/conformance' },

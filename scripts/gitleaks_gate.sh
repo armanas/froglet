@@ -19,13 +19,15 @@ usage() {
 Usage: scripts/gitleaks_gate.sh [--evidence-dir PATH]
 
 Runs the publication secret-scan gate in two passes:
-  1. current tracked tree (excludes untracked local-only files)
-  2. GitHub-visible history (origin/main + current public alpha tags by default)
+  1. tracked and non-ignored untracked public source
+  2. candidate HEAD ancestry plus selected GitHub-visible history
+     (origin/main + current public alpha tags by default)
 
-Evidence is written under _tmp/gitleaks_gate/<UTC-timestamp>/ unless
---evidence-dir overrides it.
+Each invocation keeps a fresh run directory under
+_tmp/gitleaks_gate/<UTC-timestamp>/ unless --evidence-dir overrides that root.
+Earlier reports and source snapshots are preserved when the root is reused.
 
-Override the history scope with:
+Override the public refs with (HEAD is always included):
   FROGLET_GITLEAKS_VISIBLE_REFS="origin/main refs/tags/v0.1.0-alpha.0 ..."
 EOF
 }
@@ -53,8 +55,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-evidence_dir="${evidence_dir:-_tmp/gitleaks_gate/${ts}}"
-mkdir -p "$evidence_dir"
+evidence_root="${evidence_dir:-_tmp/gitleaks_gate/${ts}}"
+mkdir -p "$evidence_root"
+evidence_dir="$(mktemp -d "${evidence_root}/run.XXXXXX")"
 
 config_path=".gitleaks.toml"
 [[ -f "$config_path" ]] || die "missing config: $config_path"
@@ -65,6 +68,17 @@ if [[ -n "${FROGLET_GITLEAKS_VISIBLE_REFS:-}" ]]; then
 else
   visible_refs=("${DEFAULT_VISIBLE_REFS[@]}")
 fi
+
+# A prospective public checkpoint can have unpushed commits that are absent
+# from every currently public ref. A tree scan misses credentials deleted in
+# that ancestry, so callers may choose public refs but may never omit HEAD.
+history_refs=("HEAD")
+for ref in "${visible_refs[@]}"; do
+  if [[ "$ref" != "HEAD" ]]; then
+    history_refs+=("$ref")
+  fi
+done
+visible_refs=("${history_refs[@]}")
 
 for ref in "${visible_refs[@]}"; do
   git rev-parse --verify --quiet "$ref" >/dev/null \
@@ -91,7 +105,7 @@ run_gitleaks() {
   die "neither gitleaks nor docker is available"
 }
 
-make_tracked_snapshot() {
+make_public_source_snapshot() {
   local snapshot_dir="$1"
   mkdir -p "$snapshot_dir"
   while IFS= read -r -d '' path; do
@@ -101,13 +115,14 @@ make_tracked_snapshot() {
       mkdir -p "$(dirname "$dest")"
       cp -pR "$src" "$dest"
     fi
-  done < <(git ls-files -z)
+  done < <(git ls-files -z --cached --others --exclude-standard)
 }
 
 count_report_findings() {
   local report="$1"
   if [[ ! -s "$report" ]]; then
-    echo 0
+    # No parseable report is not evidence of a clean scan, even if rc was 0.
+    echo 1
     return
   fi
   command -v python3 >/dev/null 2>&1 \
@@ -167,8 +182,8 @@ run_scan() {
   return "$rc"
 }
 
-snapshot_dir="${evidence_dir}/tracked-tree"
-make_tracked_snapshot "$snapshot_dir"
+snapshot_dir="$(mktemp -d "${evidence_dir}/public-source.XXXXXX")"
+make_public_source_snapshot "$snapshot_dir"
 
 tree_rc=0
 history_rc=0

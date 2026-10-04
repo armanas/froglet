@@ -18,7 +18,7 @@ jobs:
   strict-checks:
     name: Strict Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
 
     steps:
       - name: Check out repo
@@ -48,7 +48,12 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: integrations/mcp/froglet/package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            integrations/mcp/froglet/package-lock.json
+
+      - name: Install root MCP package dependencies
+        run: npm ci
 
       - name: Install MCP server dependencies
         run: npm ci --prefix integrations/mcp/froglet
@@ -62,11 +67,14 @@ jobs:
           cargo audit
 
       - name: Audit npm dependencies
-        run: npm audit --prefix integrations/mcp/froglet --audit-level=high
+        run: |
+          npm audit --audit-level=high
+          npm audit --prefix integrations/mcp/froglet --audit-level=high
 
       - name: Run strict verification matrix
         env:
           RUST_TEST_THREADS: '4'
+          FROGLET_REQUIRE_SOFTWARE_CHECKS: '1'
           FROGLET_RUN_LINUX_SANDBOX_TESTS: '1'
         run: ./scripts/strict_checks.sh
 
@@ -155,7 +163,7 @@ jobs:
   docs-site:
     name: Docs Site
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Check out repo
@@ -171,25 +179,35 @@ jobs:
       - name: Install docs site dependencies
         run: npm ci --prefix docs-site
 
-      - name: Audit docs site dependencies
-        run: npm audit --prefix docs-site --audit-level=high
-
       - name: Set up Rust for browser verification
         uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
         with:
           toolchain: 1.91.0
           targets: wasm32-unknown-unknown
 
-      - name: Build the locked browser verifier
-        run: npm run build:verifier --prefix docs-site
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
-      - name: Run docs site tests
-        run: npm test --prefix docs-site
+      - name: Build the locked browser WebAssembly (verifier, playground kernel, sample services)
+        run: npm run build:wasm --prefix docs-site
+
+      - name: Build the node for browser interoperability tests
+        run: cargo build --locked -p froglet --bin froglet-node
 
       - name: Build docs site
         env:
           SITE_URL: https://froglet.dev
         run: npm run build --prefix docs-site
+
+      - name: Run docs site tests
+        env:
+          FROGLET_PLAYGROUND_REAL_PROVIDER: '1'
+          FROGLET_PLAYGROUND_REAL_REQUESTER: '1'
+          FROGLET_NODE_BIN: ${{ github.workspace }}/target/debug/froglet-node
+        run: npm test --prefix docs-site
+
+      - name: Audit docs dependencies and verify advisory applicability
+        run: node docs-site/scripts/audit-dependencies.mjs
 
   openclaw-node18:
     name: OpenClaw Node 18

@@ -1,3 +1,4 @@
+pub mod a2a_config;
 pub mod api;
 
 /// Initialize tracing with an env-filter default of `info`.
@@ -37,6 +38,7 @@ pub mod confidential;
 pub mod config;
 pub mod db;
 pub mod execution;
+pub mod file_download;
 pub(crate) mod http_body;
 pub mod identity;
 pub mod identity_custody;
@@ -54,6 +56,7 @@ pub mod python_sandbox;
 pub mod relay_tunnel;
 pub mod requester_budget;
 pub mod requester_deals;
+pub mod research_profile;
 pub mod runtime_auth;
 pub mod sandbox;
 pub mod server;

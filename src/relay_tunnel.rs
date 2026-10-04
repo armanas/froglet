@@ -129,13 +129,33 @@ pub(crate) fn validate_public_url(value: &str) -> Result<String, String> {
 fn request_header_allowed(name: &str) -> bool {
     matches!(
         name,
-        "content-type" | "accept" | "authorization" | "content-length"
+        "content-type"
+            | "accept"
+            | "authorization"
+            | "content-length"
+            | "origin"
+            | "range"
+            | "access-control-request-method"
+            | "access-control-request-headers"
     ) || name.starts_with("x-froglet-")
 }
 
 /// Headers forwarded from local responses back into response frames.
 fn response_header_allowed(name: &str) -> bool {
-    name == "content-type" || name.starts_with("x-froglet-")
+    matches!(
+        name,
+        "content-type"
+            | "content-disposition"
+            | "content-length"
+            | "etag"
+            | "cache-control"
+            | "x-content-type-options"
+            | "access-control-allow-origin"
+            | "access-control-allow-methods"
+            | "access-control-allow-headers"
+            | "access-control-expose-headers"
+            | "vary"
+    ) || name.starts_with("x-froglet-")
 }
 
 fn error_frame<'a>(id: &'a str, status: u16, detail: &str) -> ResponseFrame<'a> {
@@ -205,10 +225,11 @@ async fn forward_request_inner<'a>(
     let mut request = http.request(method, url).timeout(REQUEST_TIMEOUT);
     for (name, value) in &frame.headers {
         let lowered = name.to_ascii_lowercase();
-        if request_header_allowed(&lowered) {
+        if lowered != "x-froglet-relay-response-limit" && request_header_allowed(&lowered) {
             request = request.header(lowered, value);
         }
     }
+    request = request.header("x-froglet-relay-response-limit", max_body_bytes.to_string());
     if !body.is_empty() {
         request = request.body(body);
     }
@@ -230,12 +251,17 @@ async fn forward_request_inner<'a>(
             headers.insert(lowered, value.to_string());
         }
     }
-    let bytes = response
-        .bytes()
+    let mut response = response;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
         .await
-        .map_err(|e| (502, format!("backend body read failed: {e}")))?;
-    if bytes.len() > max_body_bytes {
-        return Err((502, "backend response exceeds max_body_bytes".to_string()));
+        .map_err(|e| (502, format!("backend body read failed: {e}")))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > max_body_bytes {
+            return Err((502, "backend response exceeds max_body_bytes".into()));
+        }
+        bytes.extend_from_slice(&chunk);
     }
     Ok(ResponseFrame {
         id: &frame.id,

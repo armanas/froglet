@@ -71,7 +71,7 @@ metadata.
 npm run check:mcp
 npm run test:mcp
 npm pack --dry-run
-npm publish --provenance=false --otp <npm-otp>
+npm publish --tag beta --provenance=false --otp <npm-otp>
 mcp-publisher login github
 mcp-publisher publish
 curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.armanas/froglet"
@@ -79,6 +79,14 @@ curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.arm
 
 Expected proof after publish: the registry search result includes
 `"name":"io.github.armanas/froglet"` and package identifier `froglet-mcp`.
+
+The current candidate is a prerelease. Publish it explicitly under `beta`; do
+not move npm's `latest` tag. GitHub binary/image publication does not publish
+this npm package or MCP Registry record. Each needs separate publication and
+verification. An unversioned `npx froglet-mcp` selects npm's `latest` package;
+use the verified candidate version or `@beta` to exercise the prerelease.
+Verify the exact candidate version and `dist-tags.beta`
+after publication; `npm view froglet-mcp version` checks `latest`.
 
 Use compact verification commands after publishing:
 

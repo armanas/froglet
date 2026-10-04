@@ -9,6 +9,7 @@ pub const EXHAUSTED: &str = "provider execution allowance exhausted";
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ProviderPolicy {
+    pub file_download: Option<crate::file_download::FileLimits>,
     pub require_payment: bool,
     pub max_total_deals: Option<u64>,
     pub max_total_runtime_ms: Option<u64>,
@@ -394,29 +395,39 @@ pub fn authorize_invite(
     now: i64,
 ) -> Result<bool, String> {
     crate::db::with_immediate_transaction(conn, |conn| {
-        let updated = conn.execute("UPDATE provider_invites SET used_requests=used_requests+1 WHERE token_hash=?1 AND revoked=0 AND expires_at>?2 AND used_requests<max_requests", params![hash,now]).map_err(|e| e.to_string())?;
-        if updated == 1 {
-            return Ok(true);
-        }
-        let exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM provider_invites WHERE token_hash=?1)",
-                [hash],
-                |r| r.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        if exists {
-            return Ok(false);
-        }
-        use subtle::ConstantTimeEq;
-        Ok(policy
-            .invite_token_hashes
-            .iter()
-            .fold(0u8, |matched, expected| {
-                matched | hash.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8()
-            })
-            != 0)
+        authorize_invite_in_transaction(conn, policy, hash, now)
     })
+}
+
+/// Caller holds an immediate transaction covering its complete admission.
+pub(crate) fn authorize_invite_in_transaction(
+    conn: &Connection,
+    policy: &ProviderPolicy,
+    hash: &str,
+    now: i64,
+) -> Result<bool, String> {
+    let updated = conn.execute("UPDATE provider_invites SET used_requests=used_requests+1 WHERE token_hash=?1 AND revoked=0 AND expires_at>?2 AND used_requests<max_requests", params![hash,now]).map_err(|e| e.to_string())?;
+    if updated == 1 {
+        return Ok(true);
+    }
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM provider_invites WHERE token_hash=?1)",
+            [hash],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if exists {
+        return Ok(false);
+    }
+    use subtle::ConstantTimeEq;
+    Ok(policy
+        .invite_token_hashes
+        .iter()
+        .fold(0u8, |matched, expected| {
+            matched | hash.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8()
+        })
+        != 0)
 }
 
 #[cfg(test)]

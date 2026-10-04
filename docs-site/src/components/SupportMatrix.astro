@@ -1,0 +1,35 @@
+---
+import { SUPPORT_MATRIX, SUPPORT_STATUSES } from '../data/support-matrix';
+
+interface Props { id?: string; }
+const { id = 'support-matrix' } = Astro.props;
+---
+<div class="support-matrix" id={id}>
+  <p><strong>Source support and deployment evidence are separate.</strong> Implemented features need an exact compatible binary and configuration. A local candidate is unpublished; experiments, disabled paths and plans are labeled separately.</p>
+  <div class="support-matrix__scroll" tabindex="0" role="region" aria-label="Froglet functionality and practical scenarios">
+    <table>
+      <caption>Current functionality, practical Alice/Bob scenarios and limits</caption>
+      <thead><tr><th scope="col">Functionality</th><th scope="col">Status</th><th scope="col">What Alice and Bob can do</th><th scope="col">Current limit</th></tr></thead>
+      <tbody>{SUPPORT_MATRIX.map(row => <tr data-functionality={row.id}>
+        <th scope="row"><span class="support-matrix__group">{row.group}</span>{row.functionality}</th>
+        <td>{SUPPORT_STATUSES[row.status]}</td>
+        <td>{row.scenario}</td>
+        <td>{row.boundary}<span class="support-matrix__source">Candidate source reference: <code>{row.evidence}</code></span></td>
+      </tr>)}</tbody>
+    </table>
+  </div>
+</div>
+<style>
+  .support-matrix { margin-block: 1.5rem; }
+  .support-matrix__scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--sl-color-gray-5, #d9e4de); border-radius: 12px; }
+  .support-matrix table { display: table; overflow: visible; width: 100%; min-width: 780px; border-collapse: collapse; font-size: 1rem; line-height: 1.55; }
+  .support-matrix caption { padding: 1rem; text-align: left; font-weight: 600; }
+  .support-matrix th, .support-matrix td { padding: 1rem; vertical-align: top; text-align: left; border-bottom: 1px solid var(--sl-color-gray-5, #d9e4de); }
+  .support-matrix th { min-width: 170px; }
+  .support-matrix td:nth-child(2) { min-width: 155px; }
+  .support-matrix td:nth-child(3), .support-matrix td:nth-child(4) { width: 28%; }
+  .support-matrix thead { background: var(--sl-color-gray-6, #f0f7f2); }
+  .support-matrix tbody tr:last-child > * { border-bottom: 0; }
+  .support-matrix__group { display: block; margin-bottom: .35rem; font-size: .85rem; font-weight: 500; opacity: .75; }
+  .support-matrix__source { display: block; margin-top: .65rem; overflow-wrap: anywhere; }
+</style>

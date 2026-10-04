@@ -71,6 +71,7 @@ Issue codes are part of the contract; see the registry in
 | [tests/kernel_conformance_vectors.rs](../tests/kernel_conformance_vectors.rs) | Rust | `cargo test -p froglet --test kernel_conformance_vectors` |
 | [tests/x402_conformance_vectors.rs](../tests/x402_conformance_vectors.rs) | Rust | `cargo test -p froglet --test x402_conformance_vectors` |
 | [froglet-verify/tests/conformance.rs](../froglet-verify/tests/conformance.rs) | Rust (standalone verifier) | `cargo test -p froglet-verify` |
+| [froglet-wasm/tests/conformance.rs](../froglet-wasm/tests/conformance.rs) | Rust (browser signing build; signs the vectors again, byte for byte) | `cargo test -p froglet-wasm` |
 | [python/tests/test_conformance_vectors.py](../python/tests/test_conformance_vectors.py) | Python | `python3 -m unittest python.tests.test_conformance_vectors` |
 
 The standalone verifier is also the easiest way to check a chain by hand:

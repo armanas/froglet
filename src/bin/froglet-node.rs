@@ -151,6 +151,7 @@ make_async_handler!(BuildHandler, froglet::cli::build::run);
 make_async_handler!(PublishHandler, froglet::cli::publish::run);
 make_async_handler!(WhoamiHandler, froglet::cli::whoami::run);
 make_async_handler!(SafeguardsHandler, froglet::cli::safeguards::run);
+make_async_handler!(DownloadHandler, froglet::cli::download::run);
 make_async_handler!(InvokeHandler, froglet::cli::invoke::run);
 make_async_handler!(McpHandler, froglet::cli::mcp::run);
 make_async_handler!(PrepareHandler, froglet::cli::prepare::run);
@@ -169,6 +170,7 @@ fn lookup_cli_handler(name: &str) -> Option<Box<dyn CliHandler>> {
         "publish" => Some(Box::new(PublishHandler)),
         "whoami" => Some(Box::new(WhoamiHandler)),
         "safeguards" => Some(Box::new(SafeguardsHandler)),
+        "download" => Some(Box::new(DownloadHandler)),
         "invoke" => Some(Box::new(InvokeHandler)),
         "mcp" => Some(Box::new(McpHandler)),
         "prepare-http-service" => Some(Box::new(PrepareHttpHandler)),
@@ -251,7 +253,9 @@ fn print_help() {
            froglet-node mcp [--probe]            native agent MCP bridge / command-line probe\n\
          \n\
            froglet-node prepare-http-service --request FILE  prepare a fixed HTTP operation\n\
-           froglet-node prepare-service --request FILE  inspect or prepare a selected catalog/Wasm service\n\
+           froglet-node prepare-service --request FILE  prepare a selected catalog, file download, or Wasm service\n\
+           froglet-node download --service-url URL --destination PATH  verify and save a shared file\n\
+           froglet-node safeguards abort-files  stop active file responses without clearing usage\n\
            froglet-node check-updates --json     check registered source files\n\
            froglet-node doctor --json            diagnose installation, runtime, relay, and agent\n\
            froglet-node status --open --json     get a read-only local status page link\n\

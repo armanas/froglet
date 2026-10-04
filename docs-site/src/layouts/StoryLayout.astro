@@ -1,0 +1,55 @@
+---
+import '../styles/custom.css';
+import '../styles/story-pages.css';
+import SiteHeader from '../components/SiteHeader.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import FontPreload from '../components/FontPreload.astro';
+import ThemeProvider from '../components/ThemeProvider.astro';
+interface SocialImage { src: string; width: number; height: number; type: string; alt: string; }
+interface Props { title: string; description: string; path: string; image?: SocialImage; }
+const defaultImage: SocialImage = {
+  src: 'https://froglet.dev/illustrations/05-walkthrough-share-1536.webp',
+  width: 1536,
+  height: 1024,
+  type: 'image/webp',
+  alt: 'Bob and Alice at their desks, joining the two halves of a link between them.',
+};
+const { title, description, path, image = defaultImage } = Astro.props;
+const canonical = new URL(path, 'https://froglet.dev');
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="sitemap" href="/sitemap-index.xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Froglet" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={image.src} />
+    <meta property="og:image:type" content={image.type} />
+    <meta property="og:image:width" content={String(image.width)} />
+    <meta property="og:image:height" content={String(image.height)} />
+    <meta property="og:image:alt" content={image.alt} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={image.src} />
+    <meta name="twitter:image:alt" content={image.alt} />
+    <FontPreload />
+    <ThemeProvider />
+    <slot name="head" />
+  </head>
+  <body class="story-site">
+    <a class="story-skip" href="#main">Skip to content</a>
+    <SiteHeader currentPath={Astro.url.pathname} />
+    <main id="main" class="story-main"><slot /></main>
+    <SiteFooter />
+  </body>
+</html>

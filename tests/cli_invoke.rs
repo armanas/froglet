@@ -166,6 +166,7 @@ fn create_dual_state_at(
         postgres_mounts: std::collections::BTreeMap::new(),
         session_pool: Default::default(),
         hosted_trial_origin_secret: None,
+        a2a: Default::default(),
     };
 
     let pool = DbPool::open(&node_config.storage.db_path).expect("init db");
@@ -441,7 +442,8 @@ async fn invoke_published_native_data_service_preserves_immutable_binding() {
     .expect("invoke native data service");
 
     assert_eq!(report.status, "succeeded", "report: {report:?}");
-    let result = report.result.expect("native data result");
+    let expected = serde_json::to_value(&report).unwrap();
+    let result = report.result.as_ref().expect("native data result");
     assert_eq!(
         result["contract_version"],
         froglet::builtins::DATA_QUERY_CONTRACT_V1
@@ -472,6 +474,45 @@ async fn invoke_published_native_data_service_preserves_immutable_binding() {
             .is_some_and(|timestamp| timestamp > 0),
         "{status}"
     );
+
+    let directory = node.state.config.storage.data_dir.clone();
+    let original_identity = node.state.identity.node_id().to_string();
+    node.provider._handle.abort();
+    node.runtime._handle.abort();
+    drop(node);
+    let restarted_state = Arc::new(create_dual_state_at(vec![PaymentBackend::None], directory));
+    assert_eq!(restarted_state.identity.node_id(), original_identity);
+    let restarted_runtime = spawn_server(runtime_router(restarted_state.clone())).await;
+    let options = InvokeOptions {
+        service_id: String::new(),
+        input: Value::Null,
+        daemon_url: String::new(),
+        runtime_url: restarted_runtime.base_url.clone(),
+        runtime_token: "test-runtime-token".into(),
+        access_token_file: None,
+        provider_id_override: Some(original_identity),
+        idempotency_key: None,
+        max_price_sats: None,
+        wait_timeout: Duration::ZERO,
+        poll_interval: Duration::ZERO,
+    };
+    let recovered = froglet::cli::invoke::get_task(&options, &report.deal_id)
+        .await
+        .expect("read completed selected-data task after provider shutdown and requester restart");
+    let actual = serde_json::to_value(recovered).unwrap();
+    for field in [
+        "deal_id",
+        "deal_hash",
+        "quote_hash",
+        "workload_hash",
+        "status",
+        "result",
+        "result_hash",
+        "receipt_verification",
+    ] {
+        assert_eq!(actual[field], expected[field], "{field}: {actual}");
+    }
+    restarted_runtime._handle.abort();
 }
 
 #[tokio::test]

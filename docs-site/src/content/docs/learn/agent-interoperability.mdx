@@ -1,0 +1,416 @@
+---
+title: MCP and A2A
+description: Run bounded requester programs through native MCP and optional configured A2A, with a free local Alice/Bob demo.
+---
+
+import SupportMatrix from '../../../components/SupportMatrix.astro';
+
+Alice has a small program and input. Bob has a Froglet node that can execute it
+under finite limits. Alice's agent uses the local native MCP tool; her requester
+runtime verifies Bob's Quote and signs the Deal. An optional A2A adapter carries
+that same work to Bob and exposes its Task for polling.
+
+| Component | What it does |
+| --- | --- |
+| Native MCP | Connects an agent host to Alice's local requester node through `froglet-node mcp`. |
+| Optional A2A | Connects configured counterparties using A2A 1.0 HTTP+JSON and the required Froglet extension. |
+| Froglet runtime | Owns Quote checks, requester signing, admission, execution, recovery and result acceptance. |
+| Settlement driver | Applies the selected existing payment method when paid work is explicitly authorized. |
+
+## What works in practice
+
+The [functionality matrix below](#functionality-and-limits) covers supported,
+experimental, disabled and planned paths. **Verified locally** means exercised
+with real processes on the existing test hosts. **Not yet qualified** means the
+deployment claim needs further evidence. **Unsupported** means the current
+profile does not provide that capability.
+
+| Scenario | Status | In plain language |
+| --- | --- | --- |
+| Alice sends a small compatible program to Bob | Verified locally | Bob runs Alice's Wasm program and returns the answer with signed records. Alice still needs to supply compiled, compatible bytes. |
+| Alice retrieves Bob's selected table and audits its mappings | Verified locally with illustrative data | Two observed terms have one target, one has several targets, and one is unmapped under Alice's one-target policy. Scientific meaning remains a separate decision. |
+| Alice's program never finishes | Verified locally | Bob stops it at the execution limit and returns a failure record. It cannot consume unlimited compute. |
+| Alice repeats the same request after losing a response | Recovery tested, with limits | The same program, input, provider and key can recover admitted work. A request whose admission is still unknown can remain unresolved. |
+| Bob restarts after completing Alice's job | Verified locally | Alice can read the existing result and Receipt. A restart does not require buying the job again. |
+| Alice uses Codex to retrieve rows and run an analysis | Exercised with an actual Codex host on one Mac | Codex called native MCP, used the returned rows as input, ran a local compiled Wasm file on Bob and recovered the verified result. This does not qualify every host, a clean operating system or a first-time user. |
+| Bob shares a real public terminology catalog | Exercised locally with pinned public data | Alice retrieved all 140 selected GO terms in two pages, with verified receipts. This demonstrates exchange; it does not evaluate ontology alignment or research usefulness. |
+| Alice runs the native workflow on Linux arm64 | Exercised in an isolated Docker environment | The same production source passed native MCP tests and the two-node Wasm scenario. This development build does not qualify a fresh machine, Linux agent host or public installer. |
+| Alice runs the current local demo bundle | Exercised on one Mac and in Linux arm64 Docker | The precompiled program needs no Rust, Cargo or Node. Disposable setup uses Python 3.10+; the separate TLS check also needs OpenSSL. This unpublished candidate does not qualify the public installer or a fresh operating system. |
+| Alice and Bob declare different namespaces or units | Explicit preflight available | A research profile can make those differences visible before analysis. Alice must choose her own requirements; matching declarations do not prove scientific correctness. |
+| Bob admits an invited, configured Alice | Exercised over local TLS | Both the admission invitation and the A2A scope must allow her. Revocation stops new work; an ordinary admission invitation still covers the provider's services. |
+| Bob posts a link and any stranger buys immediately | Unsupported through this A2A profile | Discovery does not grant access. Bob must authorize the requester and allowed Offers; the requester must understand Froglet's extension. |
+| Alice pays real money on a public deployment | Not yet qualified | Payment adapters exist, but the free local demo does not establish production execution, settlement or recovery. |
+| Alice asks 100 providers to divide one large job | Unsupported as an automatic workflow | Individual remote jobs are supported. Froglet does not supply a multi-provider scheduler or distributed training system. |
+
+### Fresh program evidence
+
+On 1 October, separate Bob and Alice Codex sessions published selected synthetic
+assay rows and generated, compiled and remotely ran a new batch-summary Wasm
+program. The original input and three unseen cases were independently correct;
+the selected snapshot and publication signature were also checked. **That
+fresh-session qualification remains incomplete:** its recorder failed before
+exporting complete execution chains, and persistent Codex configuration changed
+for an unresolved reason. Correct outputs are not a substitute for those gates.
+
+A separate deterministic replay then ran the retained program without starting
+another agent session. Independent offline verification checked all seven new
+signed execution chains: six successful Deals, including four independently
+correct input cases, and one deliberate execution-limit failure. It also
+checked the selected-data privacy boundary and exact result recovery. Two
+earlier recorder runs failed and were retained before this passing replay.
+These are new locally verified executions; they do not silently turn the earlier
+fresh-session attempt into a pass.
+
+After Bob stopped and Alice's requester restarted, exact `run_compute` and
+`invoke_service` retries recovered the saved results and receipts without new
+Deals. In that historical replay, `get_task` attempted to refresh Bob's status
+and returned HTTP 502 while he was offline. The 3 October current-source
+correction revalidates saved terminal Quote/Deal/Receipt evidence locally,
+including after Alice restarts. Local regressions cover completed selected-data
+and Wasm calls, signed failures and rejected/canceled fixtures, key rotation,
+authentication and corrupted records. Unsigned or unresolved tasks still need
+Bob for status refresh. The fresh optimized native candidate replay passed
+independent verification of all seven chains and all six saved Alice terminal
+task reads with Bob stopped and Alice restarted. The earlier failures are
+preserved. Package/release checks and website publication remain separate;
+this website copy does not qualify cloud execution or paid settlement.
+
+**A research collaboration:** Bob shares a selected terminology table as a data
+service. Alice can look up the mappings Bob supplied. If Alice and Bob disagree
+about what a scientific term means, Froglet does not resolve that disagreement
+or establish that the mapping is correct. It supplies a way to exchange the
+selected information and inspect the records.
+
+**A disposable analysis:** Alice's assistant helps prepare a one-off analysis
+as a compatible Wasm program. Bob's configured Node can execute it under the
+quoted limits. The agent interface does not compile arbitrary Python, connect
+to Bob's private database or grant the program access to his filesystem.
+
+**A confidential project:** Bob receives the program and input in this compute
+flow. An access credential limits who may request work; it does not hide the
+input from Bob or recall a result that Alice already received. This profile is
+not confidential computation or automatic enforcement of a data-use agreement.
+
+## Source and release support
+
+This guide describes the current source implementation. Support in an installed
+release depends on its exact binary: inspect the native MCP `tools/list` response
+for `run_compute` and `get_task`, and check that release's notes. Source tests do
+not establish that an older immutable release includes these actions.
+
+Additional Linux arm64 qualification exercised 625 library tests and nine native
+MCP integration tests, then the selected-data and Wasm workflow. Thirteen tests
+were ignored, including Python OS sandbox tests; this run makes no Python
+isolation claim. The Linux binary is a separate Docker development build from
+the same recorded production inputs. Clean-machine and actual Linux agent-host
+qualification remain open.
+
+The [verified local install](/learn/quickstart/) remains the normal release path.
+The two-node example below builds a source checkout and needs development tools.
+It is separate from the no-clone installer and does not change agent-host settings.
+
+## Functionality and limits
+
+<SupportMatrix />
+
+## Run the free Alice/Bob example
+
+Use a trusted checkout that contains `examples/a2a_compute_demo.py`, with
+Python 3.10+, Cargo/Rust and the `wasm32-unknown-unknown` target. From its root:
+
+```bash
+rustup target add wasm32-unknown-unknown
+python3 examples/a2a_compute_demo.py --serve
+```
+
+The script builds the node and the existing Rust Wasm adder with `--locked`. It
+starts independent Alice and Bob processes on literal localhost ports, with
+fresh keys, private state and free-only configuration. Alice supplies
+`{"a":6,"b":7}`; Bob returns `{"sum":13,"product":42}`. The native runtime and
+CLI check signed evidence and the canonical result hash.
+
+An older checkout or installed release may lack this example and these actions.
+This preview documents the current working source; it does not establish that
+the changes have been published in a release or on the repository's main branch.
+
+Before keeping the nodes available, the script checks an exact retry, refusal
+of changed input under the same key, an infinite loop stopped by the execution
+limit, and recovery after Bob restarts. An exact retry leaves one provider Deal;
+this path does not enqueue a separate `jobs` row.
+
+The sanitized report names the verifier component and includes the result hash,
+signed execution limits and Receipt verification. It prints paths to private
+`mcp-host.json` and `agent-call.json` files. Connect your host using the generated
+MCP configuration, then use the generated `froglet` tool arguments. The host
+file points at local token files and includes no credential values. The call
+file contains the compiled program and Bob's actual identity and origin.
+
+The agent call has its own retry key. For recovery, replace the template's
+`task_id` with the `deal_id` returned by that call. A changed program or input
+needs a new key. Keep the demo running while the agent uses its configuration;
+Ctrl-C stops both nodes and removes their temporary state.
+
+Run without `--serve` for a one-shot check. After the initial build, use
+`--no-build` to reuse local build artifacts. `--output /path/to/report.json`
+saves the sanitized report; `--keep-state` retains private state for inspection.
+Failures retain private logs, and started child processes are stopped.
+
+The Rust adder example reads flat integer inputs. It is a small input-consuming
+program, not a general JSON schema validator or scientific workload.
+
+## Run a terminology mapping check
+
+The ontology scenario uses a small **illustrative dataset**, not patient data
+or an authoritative scientific ontology:
+
+```bash
+python3 examples/a2a_compute_demo.py --scenario ontology --serve
+```
+
+Bob publishes a selected terminology table as a data service. Alice retrieves
+that table through her requester node, then supplies a disposable Wasm program
+and the returned rows as explicit input. Alice chooses a rule of one distinct
+target per term. The program checks whether each term has one supplied target,
+several distinct targets, or no supplied mapping. It reports ambiguity under
+that rule rather than choosing a scientific meaning; several targets may be
+legitimate in another research workflow.
+
+| Step | What happens | What it does not establish |
+| --- | --- | --- |
+| Bob publishes | He deliberately selects the table to expose. | Access to the rest of his files or database. |
+| Alice retrieves | Her requester receives the selected rows and signed records. | That the mappings are scientifically correct. |
+| Alice runs a check | Bob's bounded executor processes the supplied rows. | Hidden access to Bob's data or automatic ontology alignment. |
+| Alice inspects the report | Conflicts and missing mappings are visible. | Permission to use the data under every possible contract. |
+
+The local setup uses Bob's operator-configured daemon origin for service
+metadata and Alice's separate runtime for signing and submission. It does not
+relax the public HTTPS requirement for remote service links. Both service
+retrieval and computation use free terms and configured counterparties.
+
+The combined recorded check returns two uniquely mapped observed terms, one
+source with multiple distinct targets, and one unmapped term. Four actual
+compute runs cover an unambiguous control, multiple targets, a missing term,
+and the combined case. Their outputs match an independent Python calculation
+from the retrieved rows. The runner also checks exact retries, changed-input
+refusal, a nonterminating program stopped at an execution limit, and recovery
+of the same data and computation records after Bob restarts. Signed evidence
+binds the exchange; the separate reference calculation checks this example's
+answer under the stated rule.
+
+The source-checkout runner prepares and compiles the program. The native MCP
+action receives compiled bytes; it does not compile arbitrary agent-written
+source. The generated host configuration can be used for a separate agent-host
+connection test while the demo is running.
+
+With a compatible binary and an already compiled module, the runner can skip
+Cargo and Rustup entirely:
+
+```bash
+python3 examples/a2a_compute_demo.py --scenario ontology \
+  --binary /absolute/froglet-node --module /absolute/ontology_audit.wasm --serve
+```
+
+Both paths are required together. This is a source helper or locally packaged
+candidate workflow; there is no new immutable public release asserted here.
+The packaged workflow has run on the development Mac with build tools absent
+from its execution PATH. A clean OS installation and independent user trial
+remain open.
+
+## Declare research assumptions before analysis
+
+Native `prepare_service` can accept an optional `research_profile` for selected
+tabular data. It checks all selected rows against the declared fields, scalar
+types, nullability and identifier prefixes. The profile carries namespaces,
+versions, units, provenance and mapping assumptions inside the existing signed
+`output_schema`; no new Kernel artifact is introduced.
+
+Alice can compare the returned profile with her own explicit requirements using
+`examples/research_profile.py`, then check the actual retrieved rows. A mismatch
+reports the field and the differing declarations. It does not silently convert
+units or infer ontology compatibility. Other clients can ignore the annotation;
+this preflight is explicit consumer logic, not a universal execution gate.
+
+For example, if Bob declares one ontology release and Alice requires another,
+the helper refuses declared compatibility. Even matching releases can contain
+wrong mappings. Signed declarations attribute the claims; scientific evaluation
+remains Alice's responsibility.
+
+The optional `examples/go_subset_catalog.py` prepares a reproducible public
+catalog from the GO Consortium's
+[2026-06-19 generic subset](https://release.geneontology.org/2026-06-19/ontology/subsets/goslim_generic.tsv):
+140 distinct terms, selecting identifier, name and term URI. Its helper pins the
+source digest and writes attribution under the Consortium's
+[CC BY 4.0 citation policy](https://geneontology.org/docs/go-citation-policy/).
+This is a term catalog, not ontology alignment, enrichment or evidence of demand.
+Native preparation is local; publication is a separate reviewed action.
+
+## Native compute and recovery
+
+Both actions use the single MCP tool named `froglet`.
+
+| Action | Required work or reference | Behavior |
+| --- | --- | --- |
+| `run_compute` | Either `wasm_module_hex` or native `wasm_module_path`, explicit JSON `input`, explicit `idempotency_key` | Submits or reconciles one bounded Wasm v1 program through the requester runtime. |
+| `get_task` | `task_id` from the returned `deal_id` | Revalidates and reads a saved terminal operation locally, even while Bob is offline. Unsigned or unresolved operations refresh from Bob and require him to be reachable. It does not submit new work or authorize payment. |
+
+`run_compute` accepts a complete binary using the
+`froglet.wasm.run_json.v1` ABI. It imports no host capabilities. The native
+action does not compile source or accept OCI packages or other execution
+runtimes. The inline module limit is 256 KiB, encoded as at most 512 KiB of hex;
+the canonical JSON input limit is 128 KiB. `input` is required even when its
+value is `null`.
+
+Native MCP also accepts `wasm_module_path`: an absolute path to a readable regular
+nonsymlink Wasm file of at most 256 KiB on Alice's machine. Supply exactly one
+module argument. The bridge reads those bytes and uses the same inline submission
+and commitments as the hex argument. The path is not a filesystem capability
+for Bob's program. Changed file bytes under an existing retry key are refused.
+The JavaScript MCP/OpenClaw wrappers have not gained this native file argument.
+
+The nonblank retry key must contain 1–128 UTF-8 bytes. Repeat the exact program, input,
+provider and key to reconcile uncertain work. Changed work under an existing
+key is refused. An explicit `provider_url` requires `provider_id`; endpoint and
+configured transport selection stay in the local requester runtime.
+
+Calls default to `max_price_sats: 0`, so the default admits free work only.
+Paid Lightning calls need an explicit price ceiling and the existing configured
+wallet and cumulative spend budget. Supplying a ceiling alone does not grant
+spending authority. The Alice/Bob example configures no wallet or paid backend.
+The native action has no caller-supplied Stripe token argument. External Stripe
+tokens use the requester runtime API; its optional automatic minting helper is
+sandbox-only.
+
+The provider's signed Quote sets execution limits. The report includes those
+limits; they are not arbitrary caller-supplied resource ceilings.
+`timeout_secs` controls polling after submission, defaults to 15 seconds and
+accepts 0–60. Zero returns after admission. A polling timeout can return the
+existing Deal reference for later recovery; it does not cancel execution.
+
+Use `get_task` with the returned `deal_id` before deciding whether to retry:
+
+```json
+{
+  "action": "get_task",
+  "task_id": "<deal_id returned by your run_compute call>",
+  "response_format": "compact"
+}
+```
+
+This is a template: replace the placeholder with the reference from your own
+call. Reads use the requester's local authentication. A task reference alone
+does not grant access to another requester's private results.
+
+A durable `submission_pending` reference records local intent. It does not
+prove that Bob accepted the work. Some ambiguous, unadmitted submissions can
+remain unresolved; the runtime does not automatically resubmit those intents.
+Exact retries are not a universal exactly-once guarantee.
+
+## Enable optional A2A
+
+A2A is disabled by default. An operator supplies a separate private Node
+configuration through `FROGLET_A2A_CONFIG_PATH`; it is not an MCP tool argument.
+On Unix, the file must be operator-owned, regular, at most 64 KiB and mode
+`0600`. Symbolic links are refused.
+
+| Node | Private configuration |
+| --- | --- |
+| Bob's provider | `clients` binds a separate bearer credential to Alice's requester public key and exact allowed signed Offer hashes. |
+| Alice's requester | `providers` binds Bob's exact origin to that bearer credential. The matching origin selects A2A for the same native MCP action. |
+
+Use credentials separate from runtime and provider-control tokens. Keep their
+values out of prompts, public metadata and reports. A changed Offer requires an
+explicit allowlist update. For the localhost example only, Alice's private
+configuration sets `allow_loopback: true` for Bob's literal `127.0.0.1` origin.
+Caller input cannot enable that exception. Normal configured provider origins
+use HTTPS and retain requester egress and DNS checks.
+
+### Review counterparties without editing credential JSON
+
+The source helper `scripts/setup_a2a_counterparty.py` prepares a redacted plan,
+then applies only the exact reviewed plan fingerprint:
+
+```bash
+python3 scripts/setup_a2a_counterparty.py --request /absolute/request.json --plan
+python3 scripts/setup_a2a_counterparty.py --request /absolute/request.json \
+  --approved-plan-sha256 SHA_FROM_THE_REVIEWED_PLAN
+```
+
+Bob's private request supplies Alice's signing key, Bob's origin and identity,
+exact Offer hashes, an already-issued admission token file, a new destination
+and finite cumulative quote, Deal and runtime allowances. Alice's import request
+pins both identities and refers to the private recipient handoff file. Existing
+unrelated A2A entries can be preserved; existing matching entries require a
+separate rotation review.
+
+Apply writes new private configuration and an activation fragment. It does not
+change a running Node: review the generated files and restart with the settings
+while preserving identity, state and existing authentication. Credentials belong
+only in private files and a trusted recipient channel, never in prompts, public
+catalogs or share links.
+
+There are two distinct controls. The A2A credential restricts the signing key and
+Offers on that transport. The admission invitation is still provider-wide: its
+holder may use other services on the ordinary HTTP path. Use separate providers
+when recipients must never access another service. Revoking admission stops new
+work; completed-task reads remain subject to the configured A2A authorization.
+
+Bob's Agent Card is served at `/.well-known/agent-card.json`. Execution uses
+A2A 1.0 HTTP+JSON under `/a2a/v1`, activates
+`https://froglet.dev/a2a/bounded-deal/v1`, and requires the configured bearer.
+The required extension carries unchanged Froglet Quote, Deal and workload
+values as exact JSON strings. A compatible requester must understand it;
+ordinary A2A discovery does not grant purchasing or requester-signing authority.
+
+Task IDs derive from the signed Deal hash. Polling projects the existing
+Froglet state, and the signed Receipt determines terminal economic meaning.
+Result availability alone does not establish completion or payment settlement.
+
+## Concurrency and repeated work
+
+There is no fixed number of people who can connect. Metadata reads, active task
+requests, data-service processes and Wasm execution have different limits. The
+default process limit is four, including selected-data services; the default
+Wasm execution limit and A2A request limit are sixteen each. Those values are
+resource controls, not a sixteen-person audience capacity guarantee. Increasing
+them needs measurements on the intended host and workload.
+
+Distinct new requests from the same signing identity with identical workload
+and terms in the same second can produce the same single-use Quote. The current
+candidate refuses duplicate issuance with `quote_issuance_collision` and
+`Retry-After: 1`. The requester retries that specific pre-Deal collision up to
+three times, for four attempts total. Attempts still consume quote allowances.
+If the collision persists, no Deal is created for that call. It is a bounded
+refusal, not an unlimited queue or an automatic retry of admitted work.
+
+Repeated identical new jobs from one identity are therefore limited by
+second-resolution Quote issuance. This is separate from retrying an existing
+job with its original key. Old ambiguous submission records are not rewritten
+by this change; clearing them without proof of non-admission would risk
+duplicating work. The original concurrent two-request reproduction now completes
+without leaving a pending intent.
+
+`examples/qualify_ontology_capacity.py` measures selected-data retrieval followed
+by the same Wasm audit, preserves failures in its counts, pins the tested binary
+and records actual Deal counts. Its conventional file/HTTP comparison has fewer
+trust and recovery responsibilities. Local measurements do not establish public
+capacity, overall performance superiority or a reason to adopt Froglet.
+
+## Supported scope and qualification
+
+The implemented A2A profile supports configured counterparties, direct ingress
+and polling. Streaming, push notifications, conversational continuation,
+provider cancellation and relay A2A ingress are outside this profile. It is
+not anonymous federation or general organizational authority delegation.
+
+The local example qualifies free execution, native MCP evidence checks,
+bounded failure, exact retry and persisted Task recovery. Production paid
+settlement, public-network operation and full A2A TCK conformance are not
+qualified by this demo. Signed evidence does not independently establish
+output correctness or usefulness.
+
+The added research helpers and compute changes are a working source candidate;
+they are not yet an immutable public release. A public website deployment does
+not publish that candidate's source or release assets. Use a trusted checkout
+containing the named files, and inspect its exact binary before following the
+candidate commands. Continue with [Connect Agents](/learn/agents/)
+or [the signed Deal flow](/learn/deal-flow/).

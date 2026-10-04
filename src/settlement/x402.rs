@@ -664,6 +664,7 @@ mod tests {
             postgres_mounts: std::collections::BTreeMap::new(),
             session_pool: Default::default(),
             hosted_trial_origin_secret: None,
+            a2a: Default::default(),
         };
 
         let pool = DbPool::open(&db_path).expect("init test db");

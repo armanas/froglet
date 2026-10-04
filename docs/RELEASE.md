@@ -12,28 +12,432 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Versioning
 
-`v0.4.6-beta.2` is the immutable public beta release, built from source revision
-`2a9e908480ef7afac8e9929b9666794a98201c36`. Hosted `v0.1.0-beta.21`
-pins that exact revision. Future releases require a new tag,
+The current immutable public beta is `v0.4.6-beta.4`, built from source revision
+`49f4753427e7b8ee8173246da53d2c592a7629b6`. Its Release Bundle asset digest and
+GitHub workflow attestation were rechecked on 3 October. The historical hosted
+`v0.1.0-beta.21` pinned the earlier beta.2 revision. The current companion workspace is
+`0.1.0-beta.23`, with public source pin
+`49f4753427e7b8ee8173246da53d2c592a7629b6`; it remains separate from the
+unpublished candidate below. Future releases require a new tag,
 a verified immutable Release Bundle, and a refreshed services source pin and
 lockfile. CI and release jobs share that pin and require locked dependencies.
 
+## Production launch preparation — 2 October 2026
+
+The current launch scope is free selected-data sharing and bounded Wasm
+computation through native MCP, with optional A2A between configured
+counterparties. This is an unpublished source candidate. Preparing a clean
+checkpoint and passing the local software gate does not promote it to a
+production deployment or a qualified stable release.
+
+The current binary and local workflow evidence are recorded below. Keep that
+evidence attached to its exact source and executable: changing runtime inputs
+requires rebuilding and requalifying the candidate. Do not relabel the failed
+fresh Bob/Alice agent attempt as passing because the deterministic replay passed.
+
+| Launch gate | Evidence required | Current boundary |
+|---|---|---|
+| Public source checkpoint | Clean reviewed checkout, locked dependencies, frozen Kernel fixtures and a complete public-source secret scan | Local preparation; no public tag or immutable Release Bundle is implied |
+| Software and website | Required toolchain present, successful release-gate logs and targeted checks for later edits | Required skipped steps are incomplete, not a PASS; optional/live checks remain separate |
+| Immutable distribution | Exact tag/source, all target archives and checksums, bootstrap and manifest trust, workflow attestations and immutable published assets | Local packaging does not satisfy this gate |
+| Advertised OS and agent hosts | Actual installation and tool execution for every claimed host, including signed-in Claude and clean-machine cells below | Current Mac Codex and Linux arm64 development evidence do not cover all cells |
+| Public free execution | Independent requester/provider hosts, trusted HTTPS, exact Offer/requester authorization, independently verified receipts and finite allowances | New compute profile remains unqualified; GCP is the chosen host, not a protocol dependency |
+| Operational safeguards | Effective target configuration, overload/refusal tests, durable accounting, owner-control authentication and ingress boundary, backup restore and guarded rollback | Local fixtures and historical hosted evidence do not establish current production behavior |
+| First-user usefulness | Independent catalog owners and recipients complete the declared task with recorded observations | Trial kit is prepared; participant results remain absent |
+| Website and release copy | Deployed routes inspected against the exact released candidate and its qualified scope | Current support matrix and Alithea Bio attribution published on 3 October; six pages and the logo match the prepared build. The compute candidate remains unpublished |
+
+### Local verification completed on 2 October
+
+The candidate-bound software gate passed all six selected steps: publication
+secret scan, native package build/verification, strict checks, website build,
+website tests and local installation smoke. It passed 1,008 Rust tests (eight
+ignored), 199 Node tests, 228 core Python tests, 228 offline-verifier tests,
+44 example tests, 90 conformance checks and 666 website tests, including all
+14 opted-in real-node cases. The companion's 47 operator/provenance/local
+HTTP fixture tests passed separately; its Rust runtime was not rebuilt.
+
+The freshly built Apple Silicon executable has SHA-256
+`64cbbeb3925c2a329146957968446277e02cb8e835ed7ad8638722477ba83d3c`.
+Its archive contains exactly the executable and LICENSE without macOS metadata,
+and the archived executable matches that digest. Installation smoke used the
+current Mac and a local file/manifest fixture; it does not qualify public
+download attestations, notarization, Gatekeeper or another OS.
+
+The retained requester-generated program passed a separate deterministic replay
+against that exact executable: seven independently verified admitted chains
+(six successes and one execution-budget failure), four frozen-answer cases,
+selected-data privacy, retry/restart recovery and tampering controls. The 136
+recorded production build inputs remained unchanged. `get_task` still returns
+HTTP 502 while its provider is offline; exact completed data/compute retries
+recover cached results. The original failed fresh-agent attempt stays failed.
+No new Codex or Claude session was used; the earlier actual Codex result remains
+attached to executable `584e3887…` below.
+
+Full local logs, source hashes, retained failed gate runs and checkpoint records
+are under ignored `_tmp/launch-prep-2026-10-02/`. These are local qualification
+records, not published release assets or production-host evidence.
+
+### Website publication and cloud selection — 3 October
+
+The prepared documentation site and restored Alithea Bio footer were published
+to the existing `froglet-docs` Worker at version
+`1a07cc84-eeb2-4c1f-8951-471ac6676401`. Six public pages and the original logo
+returned HTTP 200 and matched the prepared build bytes. The prior full-site
+version `857f8336-ed78-48cb-8f08-959f0ff8bff6` is the rollback target. Build,
+secret-scan, deployment and HTTP evidence are retained under ignored
+`_tmp/launch-prep-2026-10-02/site-publication-2026-10-03-*`. Website publication
+does not publish the Node candidate or qualify public computation.
+
+At the user's request, the active GCP CLI project was changed to
+`froglet-prod-eu`; a read-only metadata check returned `ACTIVE`. Fly
+authentication was also confirmed. GCP reported a separate Application Default
+Credentials quota-project mismatch, which was not changed. These checks do not
+establish deployment permissions, provider availability, operational safeguards
+or current hosted compute qualification. The earlier authentication blocker is
+historical; the public execution and operational gates above remain open.
+
+### Launch continuation — 3 October
+
+The next source candidate is `0.4.7-beta.1`; its tag was checked unused. Do not
+reuse or replace the immutable beta.4 tag. Cargo, npm distribution, nested MCP
+and registry metadata now use the candidate version consistently. Wasmtime is
+updated to the patched `36.0.17` line. Fresh Cargo, root npm and nested MCP npm
+audits report no vulnerabilities. The website's remaining cache-library advisory
+is **unresolved**, with a narrowly reviewed, expiring applicability policy:
+[`docs-site/DEPENDENCY_SECURITY.md`](../docs-site/DEPENDENCY_SECURITY.md).
+The policy verifies the actual custom Worker bundle and fails on other high or
+critical findings, reviewed-source/configuration drift, a newer cache-library
+release, or expiry on 17 October. It does not label the affected package fixed.
+
+On 4 October, the guard blocked newly published `http-cache-semantics` 4.3.0
+until review. Its tarball preserves the reported max-stale/cookie behavior;
+upstream closed the proposed fixes unmerged and disputes the advisory. The
+selected 4.3.0 update includes separate Vary matching fixes. npm audit reports
+zero findings for that version, which is not evidence that the reproduced
+behavior was repaired. The deployment review retains its finite expiry and
+source/configuration/bundle boundaries, including when the package audit is
+clean. Fresh exact-source CI and publication remain required. See the updated
+[dependency review](../docs-site/DEPENDENCY_SECURITY.md) for the current proof.
+
+Authenticated read-only inspection of `froglet-production` in
+`froglet-prod-eu/europe-west4-b` found all five containers running. The four
+Froglet service containers reference beta.23 configuration and immutable image
+digests; the provider advertises public beta.4. CPU, memory, process and log
+limits were inspected, and application ports are bound to host loopback. The
+public provider proxy exposes bearer-protected owner-control routes; loopback
+container ports do not make those proxied routes network-private.
+Effective provider usage reports private admission and zero quote/deal/runtime
+allowance. Public website, relay and marketplace health routes, marketplace
+stats and provider capabilities returned HTTP 200 with the normal HTTP client.
+This audits the existing deployment; it does not deploy the new candidate.
+Evidence is retained in ignored `_tmp/launch-continuation-2026-10-03/`.
+
+An isolated Fly smoke used the verified immutable beta.4 provider digest, after
+checking Release Bundle provenance and Linux amd64 image metadata. It passed
+HTTPS health, version/identity/origin and anonymous owner-control/quote/deal
+refusals. The created app was destroyed and its absence checked independently.
+This is reachability/refusal evidence for the existing release, not new compute,
+effective authenticated allowances, marketplace admission or paid execution.
+
+The new terminal-cache read path passed 43 targeted Rust tests: nine invocation,
+twelve native computation and twenty-two runtime-route cases. Successful and
+failed tasks survive requester restart and provider shutdown; signed rejected
+and canceled outcomes, historical identity rotation, authentication, unknown
+IDs, selected data, tampering and unsigned/pending refusal are covered. Only
+read-only task retrieval changes; payment mutation paths keep provider refresh.
+The optimized Apple Silicon build has SHA-256
+`1e6621c461d7f368328467ad15f7e1cc6280997bf438238ed62974c0a96a8c8f`.
+A fresh deterministic replay against that exact binary exported seven complete
+signed chains (six successes and one execution-limit failure), matched four
+previously frozen arithmetic answers, and recovered all six Alice terminal tasks
+with Bob stopped and Alice restarted. It includes the selected-data task and
+the signed failure, with no new admitted work during reads or exact retries.
+No fresh LLM session or compiler was used. The new-candidate software gate then
+passed all six selected steps: public-source/history secret scanning, locked
+native packaging, strict checks, website build/tests and packaged installation.
+The packaged executable retains the exact SHA-256 above. The strict run passed
+1,004 workspace Rust tests plus seven ontology tests, 199 JavaScript integration
+tests, 250 core Python tests, 46 example checks and 228 independent-verifier tests.
+Eight environment-specific Rust cases remained ignored. All 732 website tests
+passed, including fourteen opted-in real-node cases and sixty-six audit-guard
+cases. A fresh applicability check accepted only the documented unresolved
+website advisory and verified the actual Worker bundle. The updated recovery
+guide and expanded developer matrix were inspected in the rendered local build.
+Evidence is in `_tmp/launch-continuation-2026-10-03/software-gate-02/`, with the
+first aborted packaging attempt retained separately. This is local software
+qualification; exact-source public CI, immutable distribution and new cloud
+compute qualification remain open. The earlier beta.4-source candidate's
+results do not qualify this binary.
+
+Run the software gate from the candidate checkout with installed Rust 1.91,
+Clippy, `wasm32-unknown-unknown`, Python, OpenSSL and Node/npm prerequisites. Website
+builds also require the versions accepted by the locked Astro dependencies.
+The gate sets `FROGLET_REQUIRE_SOFTWARE_CHECKS=1`, so the strict matrix requires
+its core tools rather than silently removing required test cells:
+
+```sh
+./scripts/release_gate.sh --evidence-dir _tmp/launch-prep/software-gate
+```
+
+For a host-compatible package/install check, add `--install-smoke --version`
+with the candidate's chosen tag and the current `--platform`/`--arch`. This
+requires the tag to match `Cargo.toml` and creates local artifacts only. The
+gate builds and verifies the native optimized executable before passing that
+exact binary to the local computation examples and opted-in browser/node
+checks. Required standalone CI builds its own optimized node; developer-only
+checks retain their existing default. The signed execution budgets are
+unchanged. Confirm the package version and changelog before
+cutting a real release; keep new changes under `Unreleased` until that decision.
+
+The companion repository has its own
+[`LAUNCH/README.md`](https://github.com/armanas/froglet-services/blob/main/LAUNCH/README.md) and exact source
+pin. Publish and verify the public immutable release first, then update the
+companion pin and regenerate its lockfile against that exact source before
+building the matching hosted release. Do not point it at `main`, copy a local
+binary into an old hosted release, or invent a source revision to unblock CI.
+The companion's current pin remains independent of this launch candidate.
+
+Payments, general CPU containers, GPU rental, confidential execution, managed
+hosting and automatic batch scheduling remain outside this launch scope. Their
+historical or experimental paths do not become production-qualified by passing
+the free workflow gate. The historical v0.1.0 campaign/paid-launch checklist
+below is retained for reference and is not the current free-profile cut plan.
+
 ## Effortless publishing qualification
 
-The public beta is deployed at `froglet.dev` with the relay and marketplace in
-the separate `froglet-prod-eu` GCP project. It is **not a qualified stable
-release**. The command `scripts/release_gate.sh` covers software checks; a PASS
+**Current checkpoint, 1 October 2026:** source work has resumed on free native
+MCP selected-data exchange and bounded Wasm computation, with optional configured
+A2A transport. Its [local qualification](AGENT_INTEROPERABILITY_PLAN.md#qualification-results--1-october-2026)
+does not establish a published release, clean-machine agent qualification,
+public compute HTTPS/capacity, real payments, or first-user usefulness. Those results must name
+the exact candidate and retain their own evidence.
+
+The public documentation website was restored on 1 October after the September
+pause, at Worker version `7dd4a560-b18d-478f-a7a1-bf1b6cd73eb2`. Seven checked
+routes returned HTTP 200 and matched the local build bytes. Local evidence is
+`_tmp/improvement-2026-10-01/site-http-qualification.json` (ignored, not a release
+artifact); it explicitly records `remote_compute_verified: false`.
+
+The continued qualification descriptions were deployed at Worker version
+`857f8336-ed78-48cb-8f08-959f0ff8bff6`. The homepage and both affected guide/open-source
+routes returned HTTP 200 and matched the final build bytes. The new scenario
+rows were inspected in the live browser; the screenshot and response evidence
+are in `_tmp/improvement-2026-10-01/continuation/site/`. The previous restored
+version remains the rollback target. This is a documentation update only.
+
+The hosted compute trial remains unavailable, and GCP authentication blocks new
+public compute deployment. The source candidate remains unpublished. The final
+actual Codex host and extracted bundle passed on the current Mac; corrected
+local capacity sweeps have recorded outcomes below. Historical HTTP-baseline
+timings must not be used for performance comparison. The earlier
+relay/marketplace beta deployment in `froglet-prod-eu` and its September evidence
+below are historical; they do not establish current availability or qualification
+of the new MCP/A2A profile. The [September pause and rollback
+record](../docs-site/README.md#temporary-pause-2026-09-28) is preserved.
+Froglet is **not a qualified stable release**.
+The command `scripts/release_gate.sh` covers software checks; a PASS
 with skipped platform or external work does not satisfy the stable product gate
 below.
 
-Platform and participant qualification are pending at the user's request
-(2026-09-24). Do not schedule sessions or claim this gate has passed.
+Platform and participant qualification remain open. On 1 October the user
+authorized preparation of the next free qualification work; access to a real
+catalog, first-time participants and independent recipient hosts remains an
+external dependency. The [trial kit](AGENT_PUBLISH_ACCEPTANCE.md#first-user-trial-kit--1-october-2026)
+contains a repeatable task and empty capture record. No participants, invitations,
+or trial results are implied by its existence. Payments and GPU expansion remain
+deferred.
 
 The supported first-use journey is free, native publishing and consumption with
 Codex and Claude Code. JSON, explicitly typed CSV, SQLite selections, and small
 Wasm functions are in scope. Python remains advanced Linux functionality.
 Windows, managed always-on hosting, arbitrary applications, broader agent
 qualification, and advanced payments are outside this release.
+
+### October candidate local qualification
+
+The final local candidate binary has SHA-256
+`584e3887e9b12d9f433bef2a70487a6ebee65976cd2c146b603bd2b16d76b166`.
+Its 136 recorded production build inputs remained unchanged. This identifies a
+locally packaged, unpublished candidate; it is not an immutable public release
+or an external build attestation.
+
+- Actual authenticated Codex CLI `0.154.0` on the current Apple Silicon Mac
+  completed `status`, selected-table `invoke_service`, `run_compute` and
+  read-only `get_task` through native MCP. Independent evidence checks matched
+  the returned five rows, oracle result, result hashes and recovery references.
+  The native invocation PATH excluded Cargo, Rustup, Node and npm. This is the
+  existing Mac and agent account, not a fresh OS or a first-time-human session.
+- The extracted Mac demo bundle ran outside the checkout with checked member
+  digests and matched scenario results. Its setup helper requires Python 3.10+;
+  the native binary/MCP server needs no language runtime. The binary is ad-hoc
+  signed, without Developer ID/notarization or downloaded Gatekeeper
+  qualification. It does not qualify Linux bundles or the public installer.
+- The pinned research-profile terminology flow produced six signed execution
+  Deals and four independently matching oracle cases, preserving its 2,000 ms
+  runtime budget and retry/restart behavior. Namespace, version, unit, provenance
+  and mapping-policy mismatches were declined as exact declaration differences.
+- The pinned public GO catalog adaptation was prepared, locally published and
+  retrieved through native MCP/configured A2A in 100- and 40-row pages. All 140
+  selected `id`, `name`, `term_uri` rows matched the pinned adaptation, with two
+  verified receipts and distinct requester/provider identities. This is a local
+  reuse of public data; it is not public service publication, scientific mapping
+  evaluation or independent research-demand evidence.
+
+The continued Linux arm64 check uses a read-only snapshot of the same 136
+production inputs in a pinned Rust 1.91.0 Debian Bookworm Docker image. Its
+separate development binary has SHA-256
+`99fd4a7ddb229064bac322b87307888e5f9233cd497f4ee88cfea86250542570`.
+The run passed 625 library tests and nine native MCP integration tests; 13
+library tests were ignored. Twelve ignored tests concern Python OS sandbox or
+service execution, so this check does not qualify Python isolation. The full
+two-node terminology scenario then passed. Independent offline review verified
+all six signed chains, exact selected rows, program/input/result hashes, profile,
+four oracle cases and the execution-limit failure. This is a development build
+inside the current machine's Docker VM, not a clean-host install, a Linux agent
+session or an immutable release. Local evidence is
+`_tmp/improvement-2026-10-01/continuation/linux-arm64/independent-review.json`.
+The initial demo invocation used an unsupported output flag and was refused
+before execution; that log is retained beside the corrected successful run.
+
+The local demo handoff is now reproducible with
+`scripts/package_demo_bundle.py`. Caller-supplied binary and Wasm digests,
+an explicit local candidate label and an allowlisted payload produce deterministic
+archives; each launcher verifies member bytes and permissions before starting
+its own disposable Nodes. This integrity manifest is not an attestation or an
+immutable Release Bundle. The ontology and optional counterparty checks passed
+from extracted bundles outside the checkout on the current Mac (Python 3.13,
+system LibreSSL) and in a minimal Linux arm64 runtime (Python 3.11.16), without
+Cargo, Rustup, Rust, Node or npm. The setup helpers still require Python;
+OpenSSL is an additional prerequisite for the separate TLS check.
+
+Standalone testing exposed missing subject/authority key identifiers in the
+local TLS certificate fixture under Python 3.13 strict verification. The fixture
+in `examples/a2a_counterparty_demo.py` now generates the identifiers for the CA
+and server. TLS verification remains enabled; the failing archive and log are
+retained. Twenty packaging tests and 52 setup tests passed. This fixture and
+packaging change does not alter the native binary or Kernel artifacts.
+
+The installed Claude Code CLI was also checked through its documented read-only
+authentication command. It is logged out, so no Claude native MCP run occurred.
+The actual Codex qualification above does not substitute for that host. Sign-in
+and a new actual tool trace are prerequisites for closing the Claude gate.
+
+The final capacity sweeps use one shared M4 machine, one provider, finite free
+jobs and a private pinned copy of this binary. Report source and executable
+fingerprints stayed unchanged during each run. Latencies include every attempted
+workflow, including failures; concurrency counts client workflows, not TCP
+connections or simultaneous executing programs.
+
+| Requester setup | Concurrent tiny workflows | Complete / attempted | Recorded boundary |
+|---|---|---|---|
+| Independent requester identities | 1 / 2 / 4 / 8 | 2/2 · 4/4 · 8/8 · 16/16 | No workflow errors in this two-iteration sweep. |
+| Independent requester identities | 16 / 32 | 29/32 · 61/64 | Six admitted selected-data tasks failed at four process slots. All six terminal failure chains were recovered and independently verified as `capacity_exhausted`. |
+| One shared requester identity | 1 / 2 / 4 / 8 / 16 / 32 | 2/2 · 4/4 · 7/8 · 7/16 · 7/32 · 13/64 | 86 workflow errors retained. Identical requester/workload/terms Quote collisions were refused with a clear pre-Deal 503 after bounded attempts. |
+
+Independent mode retained 248 provider Deals and 248 requester intents: 242
+succeeded and six failed, with zero pending submissions or separate jobs.
+Shared mode retained 83 provider Deals and 83 succeeded requester intents, with
+zero pending submissions or separate jobs. The single-use Quote contract limits
+one identical requester/workload/terms tuple to about one Quote per Unix second;
+safe refusal does not remove that throughput constraint. Both runs preserved
+usage across restart, recovered the same warmed result and refused new work at
+the configured cumulative Deal limit.
+
+The corrected conventional HTTP/Python baseline performs the same selected-table
+policy audit and uses plain HTTP connections. It omits requester-supplied code,
+signed authorization/receipts, sandbox resource contracts, durable tasks and
+recovery. These timings do not prove performance superiority, developer-time or
+maintenance-cost savings, useful scientific output, demand, or public capacity.
+The historical unsuffixed reports retain diagnostics; their per-call unused TLS
+context overhead invalidates their HTTP performance comparison.
+
+Local evidence below is ignored and is not published release material:
+
+- `_tmp/improvement-2026-10-01/agent-install/final-after-quote-fix/host-qualification.json`
+- `_tmp/improvement-2026-10-01/agent-install/final-after-quote-fix/demo-bundle.json`
+- `_tmp/research-profile-2026-10-01/final-profile-qualification.json`
+- `_tmp/research-profile-2026-10-01/ontology-report-final.json`
+- `_tmp/research-profile-2026-10-01/go-catalog-runtime-report.json`
+- `_tmp/ontology-capacity-2026-10-01/final-shared-identity-report.json`
+- `_tmp/ontology-capacity-2026-10-01/final-independent-identities-report.json`
+- `_tmp/ontology-capacity-2026-10-01/independent-statistics-verification.json`
+- `_tmp/ontology-capacity-2026-10-01/independent-failure-chain-verification.json`
+
+The required matrix exited successfully in
+`/private/tmp/froglet-improvement-strict-20261001.log`: 1,007 Rust tests passed
+(including seven ontology checker tests), eight ignored; 199 Node, 29 example
+Python, 155 core Python and 226 verifier tests passed, with 90 conformance checks
+reproduced. Later Python setup-edge and capacity failure-reader changes received
+their own targeted checks: 52 full setup tests, 12 focused tests, 31 independent
+reviewer probes and nine capacity helper tests. The full matrix preceded those
+last Python changes; it is not claimed to cover one unchanged source snapshot
+across every stage. The final candidate's recorded production build inputs were
+unaffected by those harness changes.
+
+### Local finalization — captured-program replay
+
+The deterministic replay uses the same pinned Mac binary above and Alice's
+retained 81,222-byte Wasm, SHA-256
+`73d2a6842b5c3372d0ff430432a6c781384a25ce7a5e2ef9686d10de2825a615`.
+No Codex/Claude session, compiler or agent settings operation was started.
+The [public runner and runbook](../examples/README.md#replay-an-already-generated-program-without-an-llm)
+take explicit binary/program pins and original/held-out answers. They depend on
+three public Python files and the standard library, with no ignored incubation
+code dependency.
+
+Independent offline verification covered every admitted Deal: six successes
+and one failure, including an explicit facilitator owner canary, selected-data
+retrieval, four captured-program executions and a separate 75-byte looping
+program. All four arithmetic outputs match answers frozen before the actual
+agent sessions. The signed publication binds the exact nine-row, four-field
+snapshot; nineteen excluded private values are absent. This checks selected-data
+exchange and arithmetic on those inputs, not scientific truth or universal
+program correctness.
+
+After Bob restarted, all six Alice tasks recovered their original results and
+signed references. After Bob stopped and Alice restarted, exact completed
+`run_compute` and `invoke_service` retries returned cached verified results,
+with provider/requester counts unchanged. **`get_task` currently refreshes
+provider state and returned HTTP 502 with Bob stopped.** It does not provide
+offline status recovery by task ID. Unknown remote admission can still remain
+unresolved; no universal exactly-once guarantee is implied.
+
+Receipt, result and publication tamper controls were rejected. The independent
+report is `_tmp/local-finalization-2026-10-01/replay/independent-verification.json`,
+SHA-256 `5df50cd4cb6b7a21b9791cc19d7fbe7c0048b7595a2b36337e462b57fd072f33`.
+It binds final `run-03/evidence.json`, SHA-256
+`dc243699ff6b597f53ac7112cc003b59f2eab9fdc0b22f767ef00e6681b4672f`.
+The complete chains were exported before private Node state was removed. An
+independent root check also verified all seven chains and rejected a changed
+Receipt in each.
+
+The earlier actual Bob/Alice Codex attempt remains **failed**: its recorder lost
+the complete execution-chain export, and persistent Codex configuration changed
+for an unresolved reason. All seventy retained attempt files remain unchanged.
+Two subsequent deterministic recorder failures remain preserved separately:
+failed-task reads were incorrectly treated as failed tool calls, and provider
+database IDs were incorrectly conflated with signed Deal hashes. The corrected
+replay qualifies its new executions, not the missing earlier evidence. The
+guarded fresh Codex repeat still awaits explicit project-trust approval.
+
+The default validation matrix subsequently completed with 1,008 Rust tests
+passing and eight ignored, 199 Node tests, 38 example Python tests, 177 core
+Python tests, 228 verifier tests and 90 conformance checks. Final replay recorder
+changes received eleven focused tests and the live qualification above. The
+matrix includes formatting, warnings-denied tests and Clippy, protocol/browser
+builds, frozen Kernel bytes, shell syntax and tracked-tree/history secret scans.
+Its final log is `_tmp/local-finalization-2026-10-01/strict-checks-final.log`.
+Negative fixture diagnostics inside verifier tests are expected; all selected
+suites exited successfully. Earlier sandbox-permission and interrupted-script
+logs are retained. Linux syscall isolation, live payments, public hosts, fresh
+operating systems and actual Claude remain unqualified by this Mac run.
+
+The local release checkpoint packages the reviewed source and exact candidate
+pins with explicit gates. It does not create a Git commit/tag, publish release
+assets, change the companion service's source pin, or claim an immutable Release
+Bundle. Companion release pins must follow a separately published immutable
+Froglet revision. Website source/preview and conference packages have their own
+rendered checks; local edits do not replace the recorded public deployment above.
 
 ### Beta implementation and verification evidence
 
@@ -203,7 +607,9 @@ uncertain operations cannot produce misleading success or duplicate execution.
 
 Recruit five first-time users with small catalogs and a separate-machine
 recipient. Access to participants and test hosts remains a scheduling dependency;
-no invitations have been sent by this implementation pass. Provide this task:
+no invitations have been sent by this implementation pass. Use the
+[session procedure and evidence template](AGENT_PUBLISH_ACCEPTANCE.md#first-user-trial-kit--1-october-2026).
+Provide this task:
 
 > Make this catalog usable by another agent. Share only the fields the recipient
 > needs, inspect a local result, approve publication, and give the link to the
@@ -220,6 +626,12 @@ Pass only if at least four of five finish within 15 minutes without developer
 intervention and explain both consequences correctly. Fix blockers and repeat
 with fresh participants when needed; views or impressions do not count as trials.
 
+This is a usability gate. Assess product value separately using the participant's
+real task, their existing CSV/API workflow, independently checked outputs, actual
+setup/operation effort, and observed voluntary reuse. An unassisted first call,
+valid signatures, or a faster synthetic calculation does not establish demand,
+scientific validity, or an operating-cost advantage.
+
 UI qualification must also include desktop/mobile rendering, keyboard operation,
 screen-reader announcements, contrast, zoom, stale/offline states, copying when
 clipboard permission is absent, and actual downloaded file contents. DOM roles
@@ -227,7 +639,8 @@ and screenshots alone are not a complete screen-reader qualification.
 
 ### Stable release sequence (pending)
 
-The public beta sequence above is complete. Before a stable label, complete
+The historical beta sequence above does not qualify the resumed candidate.
+Before a stable label, complete
 every clean machine and agent cell, recovery and UI qualification, and the
 five-participant acceptance gate described above. Cut a new immutable release
 for any code changes made to close those gaps, update the hosted source pin, and repeat
@@ -270,6 +683,10 @@ An operator with repository administration access must first run the read-only
 `2026-03-10` and require `enabled=true`. After the exact source commit is on
 `main`, the operator creates a **draft** GitHub release using an unused tag
 and `--target` set to that commit. Creating the draft does not create a Git tag.
+For a beta, also set `--prerelease --latest=false`. Verify the draft's prerelease
+status and exact target before tagging; the workflow does not derive that
+status from the tag suffix. After publication, check that the stable `latest`
+release is unchanged.
 Then create and push that exact tag at the same source commit to trigger the
 workflow. The workflow requires the existing draft and verifies that the tag
 resolves to its source commit; it cannot create a release on its own. It then
@@ -392,10 +809,15 @@ first-party hosted node are separate deploy steps outside the tag workflow.
 
 This is the current release gate for the public Froglet repo. It has one
 entrypoint, [`scripts/release_gate.sh`](../scripts/release_gate.sh), which
-runs every line item in sequence, writes per-step evidence logs into
+runs selected line items in sequence, writes per-step evidence logs into
 `_tmp/release_gate/<UTC-timestamp>/`, and prints a pass/fail summary at the
-end. The same script is used both locally and in CI; a candidate is PASS when
-no step is FAIL.
+end. Required software steps are `secrets`, `strict`, `docs-build` and
+`docs-test`. A failed step exits `1`; a skipped required step makes the
+software gate `INCOMPLETE` and exits `2`. Skipping an explicitly requested
+package or install check also makes it incomplete. An unrequested optional
+package or install smoke remains recorded as `SKIP`. Exit `0` proves only the selected
+local software scope, not the external launch gates above. Unknown skip IDs
+and malformed packaging arguments are rejected before executing steps.
 
 ### Running the gate
 
@@ -406,17 +828,17 @@ no step is FAIL.
 # Full local gate, including the compose-backed OpenClaw+MCP smoke:
 ./scripts/release_gate.sh --compose
 
-# Cross-target package verification only (example: Linux x86_64):
+# Native package check on a Linux x86_64 host (use the matching Cargo version):
 ./scripts/release_gate.sh \
   --package-assets \
-  --version v0.1.0-alpha.1 \
+  --version v0.4.6-beta.4 \
   --platform linux \
   --arch x86_64
 
-# Host-compatible package + installer smoke (example: Apple Silicon macOS):
+# Native package + installer smoke on Apple Silicon macOS:
 ./scripts/release_gate.sh \
   --install-smoke \
-  --version v0.1.0-alpha.1 \
+  --version v0.4.6-beta.4 \
   --platform darwin \
   --arch arm64
 
@@ -424,6 +846,11 @@ no step is FAIL.
 
 Every step writes to `_tmp/release_gate/<ts>/<step>.log`, and the summary is
 also dumped to `_tmp/release_gate/<ts>/summary.tsv` for CI ingestion.
+The secret scanner preserves separate fresh run directories inside its evidence
+root. Local gate packaging rebuilds the native release executable from this
+checkout and requires the tag to match `Cargo.toml`; it refuses cross-target
+labels. The release workflow builds each target on its native runner. Standalone
+archive structure and checksum checks alone do not prove source provenance.
 
 First-party hosted smoke for `ai.froglet.dev` is intentionally outside this
 scripted public-repo gate and is maintained separately from the public repo
@@ -434,17 +861,22 @@ below.
 
 | Step id | Status today | Validation | Underlying command | Notes |
 | --- | --- | --- | --- | --- |
-| `secrets` | Ready | Publication secret scan | `./scripts/gitleaks_gate.sh` | Current tracked tree + GitHub-visible history (`origin/main` + current public alpha tags). |
+| `secrets` | Ready | Publication secret scan | `./scripts/gitleaks_gate.sh` | Tracked and non-ignored untracked public source, candidate `HEAD`, and the selected GitHub-visible refs. |
 | `strict` | Ready | Repo validation matrix | `./scripts/strict_checks.sh` | Rust, Python, OpenClaw, MCP, release helper syntax. Also gates compose/LND/Tor integrations via env flags set by the gate. |
 | `docs-build` | Ready | Docs build | `npm --prefix docs-site run build` | Pre-publish docs-site build |
 | `docs-test` | Ready | Docs-site unit tests | `npm --prefix docs-site test` | Vitest suite under `docs-site/src/**/__tests__/` |
 | `package` | Ready (opt-in) | Release asset packaging + verification | `scripts/package_release_assets.sh` + `scripts/verify_release_assets.sh` | Requires `--version`, `--platform`, `--arch` |
 | `install-smoke` | Ready (opt-in) | Installer-path smoke from packaged assets | `scripts/smoke_install_from_assets.sh` | Implies `--package-assets`; packaged target must match the current host |
 
-### Hard launch gates outside the script
+<a id="hard-launch-gates-outside-the-script"></a>
 
-The script above is necessary, but it is not sufficient for a public launch.
-These checks must be green before a `v0.1.0` launch claim:
+### Historical v0.1.0 launch gates outside the script
+
+This section preserves the earlier paid-MVP launch plan. The current free
+candidate uses the [October launch gates](#production-launch-preparation--2-october-2026)
+above and the required platform/external evidence. Neither plan can be
+satisfied by a local software-gate exit code alone. The earlier `v0.1.0`
+plan required:
 
 - Live Claude MCP smoke. Claude Code or Claude Desktop must load the generated
   Froglet MCP config and complete the expected tool smoke. This is a hard
@@ -458,7 +890,7 @@ These checks must be green before a `v0.1.0` launch claim:
 - Distribution smoke for every launch channel named in the release notes.
   Record direct evidence links in the release PR or release notes.
 
-The current MVP launch gate requires one live crypto rail and one live fiat
+That paid MVP launch gate required one live crypto rail and one live fiat
 rail. Lightning and Stripe are the selected blockers; x402 is desirable but
 must not block launch if its hosted proof is not ready. Do not claim any
 hosted paid rail until the public transcript for that rail exists.
@@ -493,9 +925,10 @@ git tag v0.1.0-alpha.1
 git push origin v0.1.0-alpha.1
 ```
 
-## GitHub Release Body Draft
+## Historical v0.1.0 GitHub Release Body Draft
 
-Use this as the release body for `v0.1.0` after replacing evidence
+This is an archived draft, not copy for the current free candidate. Use it as
+the release body only for that `v0.1.0` scope after replacing evidence
 placeholders with links to the final release gate, workflow, and hosted smoke
 results.
 

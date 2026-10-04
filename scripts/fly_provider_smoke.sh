@@ -1,108 +1,108 @@
 #!/usr/bin/env bash
-# Path D end-to-end smoke: deploy a froglet-provider to Fly.io, register
-# it against a Froglet marketplace, and capture evidence that the
-# provider was accepted. Used to validate that a no-DNS PaaS shape works
-# against the public marketplace before promoting Path D in launch
-# copy.
-#
-# Prerequisites:
-#   - `flyctl` (or `fly`) installed and `fly auth login` already done
-#   - `curl`, `jq` available
-#
-# Usage:
-#   scripts/fly_provider_smoke.sh \
-#     [--marketplace-url URL] \
-#     [--image REF] \
-#     [--region REGION] \
-#     [--keep] \
-#     [--app-prefix PREFIX]
-#
-# Defaults:
-#   --marketplace-url https://marketplace.froglet.dev
-#   --image           ghcr.io/armanas/froglet-provider:latest
-#   --region          iad
-#   --app-prefix      froglet-pathd-smoke
-#
-# When `--keep` is not passed, the Fly app is destroyed on exit (trap),
-# so the smoke costs nothing beyond the seconds it ran. With `--keep`,
-# the app stays up for manual inspection — destroy it later with
-# `fly apps destroy <app>`.
-
+# Deploy an isolated, free-only Fly candidate and check public reachability and
+# anonymous refusal. This does not qualify computation, marketplace admission,
+# image provenance, or production readiness. No marketplace registration occurs.
 set -euo pipefail
+umask 077
 
-marketplace_url="https://marketplace.froglet.dev"
-image="ghcr.io/armanas/froglet-provider:latest"
-region="iad"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+image=""
+expected_version=""
+organization=""
+region=fra
 keep=0
-app_prefix="froglet-pathd-smoke"
+prepare_only=0
+app_prefix=froglet-check
+max_deals=0
+max_quotes=0
+max_runtime_ms=0
+access_mode=private
+evidence_dir=""
+app_created=0
+failure_reason=""
 
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
-  exit 1
-}
+  cat <<'EOF'
+Usage: scripts/fly_provider_smoke.sh --image ghcr.io/OWNER/froglet-provider@sha256:DIGEST
+       --expected-version VERSION --org ORGANIZATION [--region REGION] [--keep] [--prepare-only]
+       [--app-prefix PREFIX] [--evidence-dir DIRECTORY]
+       [--access-mode private|invite]
+       [--max-deals N] [--max-quotes N] [--max-runtime-ms N]
 
+The image must be an exact digest and VERSION must match node capabilities.
+The operator must separately verify release/image provenance before deployment.
+Default region: fra. Default cumulative allowances: zero (no new execution).
+Explicit candidate ceilings: deals/quotes <= 1000; runtime <= 5000000 ms.
+Creates one shared-CPU/1 GiB Machine and a 3 GiB persistent data volume.
+Private access mode requires the owner credential for new work; owner-control
+routes share the public listener and require bearer authentication. They are
+not isolated by a separate network listener. No runtime port is published.
+Explicit invite mode permits separately issued bounded invitations. This
+helper does not issue credentials or test authenticated invitation execution.
+
+--prepare-only writes the configuration without calling Fly or curl and does
+not require --org. Actual deployment requires an explicit billing organization.
+Without --keep, only an app successfully created by this run is destroyed.
+With --keep, the app and volume remain billable, including after a failed check.
+Cloud limits are not a spending cap. No paid rails or public registration.
+EOF
+}
+fail() { failure_reason="$*"; printf 'fly_provider_smoke: %s\n' "$failure_reason" >&2; exit 1; }
+need_value() { [[ $# -ge 2 && -n "$2" ]] || fail "missing value for $1"; }
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --marketplace-url) marketplace_url="$2"; shift 2 ;;
-    --image)           image="$2";           shift 2 ;;
-    --region)          region="$2";          shift 2 ;;
-    --keep)            keep=1;               shift   ;;
-    --app-prefix)      app_prefix="$2";      shift 2 ;;
-    -h|--help)         usage ;;
-    *) echo "unknown arg: $1" >&2; usage ;;
+    --image) need_value "$@"; image="$2"; shift 2 ;;
+    --expected-version) need_value "$@"; expected_version="$2"; shift 2 ;;
+    --org) need_value "$@"; organization="$2"; shift 2 ;;
+    --region) need_value "$@"; region="$2"; shift 2 ;;
+    --app-prefix) need_value "$@"; app_prefix="$2"; shift 2 ;;
+    --evidence-dir) need_value "$@"; evidence_dir="$2"; shift 2 ;;
+    --max-deals) need_value "$@"; max_deals="$2"; shift 2 ;;
+    --max-quotes) need_value "$@"; max_quotes="$2"; shift 2 ;;
+    --max-runtime-ms) need_value "$@"; max_runtime_ms="$2"; shift 2 ;;
+    --access-mode) need_value "$@"; access_mode="$2"; shift 2 ;;
+    --keep) keep=1; shift ;;
+    --prepare-only) prepare_only=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) fail "unknown argument: $1" ;;
   esac
 done
-
-# Prefer `fly` (modern) but fall back to `flyctl` (older installs).
-if command -v fly >/dev/null 2>&1; then
-  fly_cmd=fly
-elif command -v flyctl >/dev/null 2>&1; then
-  fly_cmd=flyctl
-else
-  echo "fly_provider_smoke: install flyctl first (https://fly.io/docs/hands-on/install-flyctl/)" >&2
-  exit 1
+[[ "$image" =~ ^ghcr\.io/[a-z0-9._-]+/froglet-provider@sha256:[0-9a-f]{64}$ ]] \
+  || fail "--image must be an exact ghcr.io/OWNER/froglet-provider@sha256:<64 lowercase hex> reference"
+[[ "$expected_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][A-Za-z0-9.-]+)?$ ]] \
+  || fail "--expected-version must be the node's package version (without v)"
+[[ "$region" =~ ^[a-z]{3}$ ]] || fail "invalid region"
+[[ "$access_mode" == private || "$access_mode" == invite ]] || fail "access mode must be private or invite"
+if [[ -n "$organization" ]]; then
+  [[ "$organization" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ && ${#organization} -le 64 ]] \
+    || fail "invalid organization slug"
 fi
-
-for tool in curl jq; do
-  command -v "$tool" >/dev/null 2>&1 || {
-    echo "fly_provider_smoke: $tool is required" >&2
-    exit 1
-  }
-done
-
-if ! "$fly_cmd" auth whoami >/dev/null 2>&1; then
-  echo "fly_provider_smoke: run '$fly_cmd auth login' first" >&2
-  exit 1
-fi
-
-# Deterministic-enough app name with a timestamp so re-runs don't
-# collide. Fly app names must be 1-30 chars, lowercase + digits +
-# hyphens, no trailing hyphen.
-suffix=$(date -u +%Y%m%d%H%M%S)
-app_name="${app_prefix}-${suffix}"
-app_name="${app_name:0:30}"
-app_name="${app_name%-}"
-public_url="https://${app_name}.fly.dev"
-
-evidence_dir="_tmp/fly_provider_smoke/${suffix}"
-mkdir -p "$evidence_dir"
-
-cleanup() {
-  local rc=$?
-  if [[ $keep -eq 0 ]]; then
-    echo "fly_provider_smoke: destroying ${app_name}"
-    "$fly_cmd" apps destroy "$app_name" --yes >/dev/null 2>&1 || true
-  else
-    echo "fly_provider_smoke: --keep set; ${app_name} left running"
-    echo "  destroy later with: ${fly_cmd} apps destroy ${app_name} --yes"
-  fi
-  exit $rc
+[[ "$prepare_only" == 1 || -n "$organization" ]] || fail "--org is required for deployment"
+[[ "$app_prefix" =~ ^[a-z][a-z0-9-]*[a-z0-9]$ && ${#app_prefix} -le 15 ]] \
+  || fail "app prefix must be 2-15 lowercase letters/digits/hyphens, with no trailing hyphen"
+normalize_allowance() {
+  local label="$1" value="$2" ceiling="$3"
+  [[ "$value" =~ ^[0-9]{1,7}$ ]] || fail "$label must be a nonnegative integer <= $ceiling"
+  value=$((10#$value))
+  [[ "$value" -le "$ceiling" ]] || fail "$label exceeds candidate ceiling $ceiling"
+  printf '%s' "$value"
 }
-trap cleanup EXIT
+max_deals="$(normalize_allowance --max-deals "$max_deals" 1000)"
+max_quotes="$(normalize_allowance --max-quotes "$max_quotes" 1000)"
+max_runtime_ms="$(normalize_allowance --max-runtime-ms "$max_runtime_ms" 5000000)"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required to record evidence"
 
-cd "$(mktemp -d)"
+suffix="$(date -u +%Y%m%d%H%M%S)"
+app_name="${app_prefix}-${suffix}"
+public_url="https://${app_name}.fly.dev"
+evidence_dir="${evidence_dir:-$repo_root/_tmp/fly_provider_smoke/$suffix}"
+[[ ! -e "$evidence_dir" ]] || fail "evidence directory already exists: $evidence_dir"
+mkdir -p "$evidence_dir"
+evidence_dir="$(cd "$evidence_dir" && pwd)"
+config_path="$evidence_dir/fly.toml"
+printf 'check\tstatus\tdetail\n' > "$evidence_dir/checks.tsv"
 
-cat > fly.toml <<EOF
+cat > "$config_path" <<EOF
 app = "${app_name}"
 primary_region = "${region}"
 
@@ -115,7 +115,28 @@ primary_region = "${region}"
   FROGLET_IDENTITY_AUTO_GENERATE = "true"
   FROGLET_LISTEN_ADDR = "0.0.0.0:8080"
   FROGLET_PUBLIC_BASE_URL = "${public_url}"
+  FROGLET_RUNTIME_LISTEN_ADDR = "127.0.0.1:0"
+  FROGLET_RUNTIME_ALLOW_NON_LOOPBACK = "false"
+  FROGLET_NETWORK_MODE = "clearnet"
   FROGLET_PAYMENT_BACKEND = "none"
+  FROGLET_PROVIDER_REQUIRE_PAYMENT = "false"
+  FROGLET_PROVIDER_ACCESS_MODE = "${access_mode}"
+  FROGLET_PRICE_EVENTS_QUERY = "0"
+  FROGLET_PRICE_EXEC_WASM = "0"
+  FROGLET_REQUESTER_SPEND_BUDGET_MSAT = "0"
+  FROGLET_PROVIDER_MAX_TOTAL_DEALS = "${max_deals}"
+  FROGLET_PROVIDER_MAX_TOTAL_QUOTES = "${max_quotes}"
+  FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS = "${max_runtime_ms}"
+  FROGLET_PROVIDER_MIN_FREE_BYTES = "536870912"
+  FROGLET_PROVIDER_MAX_DATABASE_BYTES = "134217728"
+  FROGLET_PUBLIC_REQUEST_QUOTA = "120"
+  FROGLET_PUBLIC_WRITE_QUOTA_WINDOW_SECS = "60"
+  FROGLET_PROCESS_CONCURRENCY = "1"
+  FROGLET_WASM_CONCURRENCY_LIMIT = "1"
+  FROGLET_WASM_MODULE_CACHE_CAPACITY = "8"
+  FROGLET_EXECUTION_TIMEOUT_SECS = "5"
+  FROGLET_ALLOW_UNSANDBOXED_PYTHON = "false"
+  FROGLET_GPU_ENABLED = "false"
 
 [http_service]
   internal_port = 8080
@@ -124,107 +145,133 @@ primary_region = "${region}"
   auto_start_machines = true
   min_machines_running = 1
 
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 8
+    hard_limit = 16
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "1gb"
+
 [[mounts]]
   source = "froglet_data"
   destination = "/data"
 EOF
 
-echo "fly_provider_smoke: app=${app_name}  url=${public_url}  region=${region}"
-echo "fly_provider_smoke: image=${image}"
-echo "fly_provider_smoke: marketplace=${marketplace_url}"
-echo "fly_provider_smoke: evidence=${evidence_dir}"
+record_evidence() {
+  python3 - "$evidence_dir" "$1" "$image" "$expected_version" "$app_name" "$public_url" "$keep" "$organization" "$failure_reason" <<'PY'
+import csv, hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+with (root / 'checks.tsv').open(encoding='utf-8') as source:
+    rows = list(csv.DictReader(source, delimiter='\t'))
+result = {
+    'schema': 'froglet.fly-candidate-smoke.v1',
+    'status': sys.argv[2], 'requested_image': sys.argv[3],
+    'expected_version': sys.argv[4], 'app': sys.argv[5], 'public_url': sys.argv[6],
+    'keep_requested': sys.argv[7] == '1', 'checks': rows,
+    'organization': sys.argv[8] or None,
+    'failure_reason': sys.argv[9] or None,
+    'config_sha256': hashlib.sha256((root / 'fly.toml').read_bytes()).hexdigest(),
+    'scope': 'public reachability and anonymous refusal only',
+    'not_verified': ['image/release provenance', 'authenticated effective safeguards',
+        'remote computation and signed execution receipts', 'restart/recovery',
+        'marketplace admission', 'production readiness'],
+    'owner_controls': 'bearer authenticated on the public provider listener',
+}
+(root / 'qualification.json').write_text(json.dumps(result, indent=2) + '\n')
+PY
+}
+record_evidence prepared
+if [[ "$prepare_only" == 1 ]]; then
+  printf 'Prepared %s; no Fly or HTTP operation occurred.\n' "$config_path"
+  exit 0
+fi
 
-"$fly_cmd" apps create "$app_name" --machines >/dev/null
-"$fly_cmd" volumes create froglet_data --region "$region" --size 1 --app "$app_name" --yes >/dev/null
+if command -v fly >/dev/null 2>&1; then fly_cmd=fly
+elif command -v flyctl >/dev/null 2>&1; then fly_cmd=flyctl
+else fail "install flyctl before deployment"; fi
+for tool in curl jq; do
+  command -v "$tool" >/dev/null 2>&1 || fail "$tool is required"
+done
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [[ "$app_created" == 1 ]]; then
+    if [[ "$keep" == 1 ]]; then
+      printf 'fly_provider_smoke: retained %s; app/volume remain billable.\n' "$app_name"
+      printf 'Cleanup: %s apps destroy %s --yes\n' "$fly_cmd" "$app_name"
+    elif "$fly_cmd" apps destroy "$app_name" --yes > "$evidence_dir/cleanup.log" 2>&1; then
+      printf 'cleanup\tpass\tcreated app destroyed\n' >> "$evidence_dir/checks.tsv"
+    else
+      printf 'cleanup\tfail\tcreated app could not be destroyed; inspect cleanup.log\n' >> "$evidence_dir/checks.tsv"
+      printf 'fly_provider_smoke: cleanup failed for %s; resources may remain billable.\n' "$app_name" >&2
+      failure_reason="created app cleanup failed; resources may remain billable"
+      rc=1
+    fi
+  fi
+  if [[ "$rc" != 0 ]]; then record_evidence failed
+  else record_evidence passed; fi
+  exit "$rc"
+}
+trap cleanup EXIT
+"$fly_cmd" auth whoami > /dev/null 2>&1 || fail "Fly login is required"
+"$fly_cmd" apps create "$app_name" --org "$organization" --yes > "$evidence_dir/create.log" 2>&1 \
+  || fail "app creation failed; no app will be destroyed"
+app_created=1
+"$fly_cmd" volumes create froglet_data --region "$region" --size 3 --app "$app_name" --yes \
+  > "$evidence_dir/volume.log" 2>&1
+"$fly_cmd" deploy --ha=false --yes --app "$app_name" --config "$config_path" --image "$image" \
+  > "$evidence_dir/deploy.log" 2>&1
 
-# Use --ha=false so we deploy a single machine (smoke test, not HA).
-"$fly_cmd" deploy --remote-only --ha=false --app "$app_name" 2>&1 | tee "${OLDPWD}/${evidence_dir}/deploy.log"
-
-# Wait up to 5 minutes for /v1/node/capabilities to come up.
-deadline=$(( $(date -u +%s) + 300 ))
-while [[ $(date -u +%s) -lt $deadline ]]; do
-  if curl -fsS --max-time 5 "${public_url}/v1/node/capabilities" -o "${OLDPWD}/${evidence_dir}/capabilities.json" 2>/dev/null; then
-    break
+request() {
+  local method="$1" path="$2" output="$3"
+  if [[ "$method" == POST ]]; then
+    curl --disable --silent --show-error --max-time 15 --request POST \
+      --header 'Content-Type: application/json' --data-binary '{}' \
+      --output "$output" --write-out '%{http_code}' "$public_url$path"
+  else
+    curl --disable --silent --show-error --max-time 15 --request GET \
+      --output "$output" --write-out '%{http_code}' "$public_url$path"
+  fi
+}
+# Only the newly created candidate is queried. Do not follow redirects.
+deadline=$((SECONDS + 300))
+ready=0
+while [[ $SECONDS -lt $deadline ]]; do
+  if code="$(request GET /v1/node/capabilities "$evidence_dir/capabilities.json")" && [[ "$code" == 200 ]]; then
+    ready=1; break
   fi
   sleep 5
 done
-if [[ ! -s "${OLDPWD}/${evidence_dir}/capabilities.json" ]]; then
-  echo "fly_provider_smoke: provider did not become reachable at ${public_url}/v1/node/capabilities within 5 min" >&2
-  exit 1
-fi
+[[ "$ready" == 1 ]] || fail "candidate capabilities did not become reachable within 5 minutes"
+jq -e --arg expected "$expected_version" --arg url "$public_url" \
+  '.version == $expected and (.identity.node_id | type == "string" and test("^[0-9a-f]{64}$")) and .transports.clearnet.enabled == true and .transports.clearnet.url == $url' \
+  "$evidence_dir/capabilities.json" > /dev/null \
+  || fail "capabilities version, identity or advertised URL mismatch"
+printf 'capabilities\tpass\texpected version, identity and exact HTTPS origin\n' >> "$evidence_dir/checks.tsv"
+code="$(request GET /health "$evidence_dir/health.json")"
+[[ "$code" == 200 ]] && jq -e '.status == "ok" and .service == "froglet"' "$evidence_dir/health.json" > /dev/null \
+  || fail "health response mismatch"
+printf 'health\tpass\tFroglet HTTP 200 health response\n' >> "$evidence_dir/checks.tsv"
 
-provider_id=$(jq -r '.identity.node_id' "${OLDPWD}/${evidence_dir}/capabilities.json")
-advertised=$(jq -r '.transports.clearnet.url' "${OLDPWD}/${evidence_dir}/capabilities.json")
-echo "fly_provider_smoke: provider_id=${provider_id}"
-echo "fly_provider_smoke: advertised=${advertised}"
-
-if [[ "$advertised" != "${public_url}" ]]; then
-  echo "fly_provider_smoke: advertised URL mismatch (got '${advertised}', expected '${public_url}')" >&2
-  exit 1
-fi
-
-# Wait for /v1/feed to have a descriptor and at least one offer before
-# registering — the marketplace's registration path requires both to
-# verify provider identity end-to-end.
-deadline=$(( $(date -u +%s) + 60 ))
-while [[ $(date -u +%s) -lt $deadline ]]; do
-  curl -fsS --max-time 5 "${public_url}/v1/feed?limit=100" -o "${OLDPWD}/${evidence_dir}/feed.json" || true
-  if [[ -s "${OLDPWD}/${evidence_dir}/feed.json" ]]; then
-    n=$(jq '[.artifacts[] | select(.kind == "descriptor")] | length' "${OLDPWD}/${evidence_dir}/feed.json")
-    o=$(jq '[.artifacts[] | select(.kind == "offer")] | length' "${OLDPWD}/${evidence_dir}/feed.json")
-    if [[ "$n" -ge 1 && "$o" -ge 1 ]]; then
-      break
-    fi
+check_refusal() {
+  local method="$1" path="$2" expected="$3" name="$4" code
+  code="$(request "$method" "$path" "$evidence_dir/$name.json")"
+  [[ "$code" == "$expected" ]] || fail "$method $path returned $code; expected $expected"
+  if [[ "$expected" == 403 ]]; then
+    jq -e '.code == "provider_access_required"' "$evidence_dir/$name.json" > /dev/null \
+      || fail "$path did not report private provider admission"
   fi
-  sleep 3
-done
-
-echo "fly_provider_smoke: posting registration to ${marketplace_url}/v1/registrations"
-curl -fsS -X POST "${marketplace_url}/v1/registrations" \
-  -H "content-type: application/json" \
-  -d "{\"provider_url\":\"${public_url}\"}" \
-  -o "${OLDPWD}/${evidence_dir}/register.json"
-
-reg_status=$(jq -r '.status' "${OLDPWD}/${evidence_dir}/register.json")
-reg_provider=$(jq -r '.provider_id' "${OLDPWD}/${evidence_dir}/register.json")
-reg_offers=$(jq -r '.offers_seen' "${OLDPWD}/${evidence_dir}/register.json")
-
-if [[ "$reg_status" != "active" ]]; then
-  echo "fly_provider_smoke: registration status was '${reg_status}', expected 'active'" >&2
-  cat "${OLDPWD}/${evidence_dir}/register.json" >&2
-  exit 1
-fi
-if [[ "$reg_provider" != "$provider_id" ]]; then
-  echo "fly_provider_smoke: registered provider_id '${reg_provider}' != advertised '${provider_id}'" >&2
-  exit 1
-fi
-
-# Marketplace indexer is eventually consistent; poll for the provider
-# to show up in the public /v1/providers list. Allow up to 60s.
-deadline=$(( $(date -u +%s) + 60 ))
-listed=0
-while [[ $(date -u +%s) -lt $deadline ]]; do
-  if curl -fsS --max-time 5 "${marketplace_url}/v1/providers/${provider_id}" -o "${OLDPWD}/${evidence_dir}/provider_detail.json" 2>/dev/null; then
-    listed=1
-    break
-  fi
-  sleep 3
-done
-
-cat <<EOF
-
-fly_provider_smoke: SUCCESS
-
-  provider_id   ${provider_id}
-  provider_url  ${public_url}
-  offers_seen   ${reg_offers}
-  indexer_seen  $([[ $listed -eq 1 ]] && echo yes || echo "not yet (eventually consistent)")
-  evidence      ${OLDPWD}/${evidence_dir}
-
-Path D is verified end-to-end. Files in evidence dir:
-  capabilities.json   /v1/node/capabilities response from the Fly provider
-  feed.json           /v1/feed (descriptor + offer)
-  register.json       marketplace registration response
-  provider_detail.json marketplace /v1/providers/<id> response (if indexed)
-  deploy.log          fly deploy output
-EOF
+  printf '%s\tpass\tanonymous %s %s refused with HTTP %s\n' "$name" "$method" "$path" "$code" \
+    >> "$evidence_dir/checks.tsv"
+}
+check_refusal GET /v1/provider/usage 401 owner-usage
+check_refusal POST /v1/provider/control 401 owner-control
+check_refusal POST /v1/provider/quotes 403 anonymous-quote
+check_refusal POST /v1/provider/deals 403 anonymous-deal
+printf 'Candidate reachability/refusal checks passed: %s\n' "$public_url"
+printf 'Evidence: %s\n' "$evidence_dir"
+printf 'Computation, effective allowances, image provenance and marketplace admission still require separate qualification.\n'

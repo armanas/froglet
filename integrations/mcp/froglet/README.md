@@ -17,8 +17,35 @@ become a second policy implementation.
 - JavaScript compatibility server: Node.js 18+ or a digest-pinned MCP image
 - A running Froglet provider/runtime is required for provider, runtime,
   marketplace, payment, and publication actions
-- Use the public `llms.txt` HTTP flow when you only want the no-install hosted
-  proof
+- The no-install hosted compute trial is currently unavailable. The browser
+  verifier/playground and the local candidate demo are separate alternatives.
+
+## Support and qualification
+
+The [shared functionality matrix source](../../../docs-site/src/data/support-matrix.ts)
+feeds the local website build/preview; these additions are not yet publicly
+deployed. It distinguishes implemented, locally verified candidate,
+experimental, disabled, planned and unqualified paths. Check the exact connected binary's `tools/list`;
+these source instructions do not add actions to an older immutable release.
+
+Native MCP includes preparation, publication lifecycle, safeguards and supplied
+Wasm execution. The JavaScript/OpenClaw surface additionally exposes marketplace
+discovery, waiting and settlement inspection, but does not expose every native
+preparation/lifecycle action. Neither surface compiles a program merely because
+the user describes one. A2A is optional, private-configured and polling-only.
+
+Actual Codex tool use on one Mac and the extracted local demo bundles are
+recorded in [Release](../../../docs/RELEASE.md). Claude Code is logged out;
+clean-machine installation, public compute operation and real-money settlement
+remain separate gates. The later fresh Bob/Alice generated-program attempt had
+correct independently checked outputs but incomplete chain export and a
+persistent Codex configuration change. Its guarded fresh-session repeat remains
+unrun; a separate deterministic replay cannot qualify those earlier sessions.
+That separate replay verified seven new signed chains and four independent input
+cases. With Bob stopped and Alice restarted, exact saved `run_compute` and
+`invoke_service` retries recovered results. `get_task` still requires Bob to
+refresh status and returned HTTP 502 while he was offline. Offline artifact
+verification and an online task-status read are distinct operations.
 
 ## Quick Start
 
@@ -41,7 +68,7 @@ status proof, and a transient read-only publication/invocation proof that is
 confirmed-unpublished with no active offer remaining. A digest-pinned dual-role image is
 used only when native service management is unavailable.
 
-The native tool supports `status`, `invoke_service`, two-step
+The native tool supports `status`, `invoke_service`, `run_compute`, `get_task`, two-step
 `marketplace_publish`, `publication_status`, `publication_logs`,
 `publication_pause`, `publication_resume`, `publication_rollback`, and
 `publication_unpublish`, plus managed-operation status, confirmed
@@ -51,6 +78,43 @@ revision hash and unpublish requires an exact `confirm_service_id` before the
 bridge sends an HTTP request. Managed mutation similarly requires an exact
 `confirm_operation_id`. `local_proof` is an operator-enabled demo action;
 the clean install does not seed the demo it requires.
+
+Native `run_compute` accepts a Wasm v1 binary in `wasm_module_hex` or
+`wasm_module_path`, an explicit JSON `input` (including `null`), and an explicit
+`idempotency_key` of 1–128 UTF-8 bytes. The file option requires an absolute path
+to a readable regular nonsymlink file of at most 262144 bytes and is mutually
+exclusive with hex. It reads the exact compiled bytes locally and delegates to
+the same inline submission and verification path; the module is not echoed in
+the response. The JavaScript bridge still accepts hex only. The program uses
+the `froglet.wasm.run_json.v1` ABI. Source
+compilation, OCI workloads and host capabilities are outside this native action.
+Execution limits come from the provider's signed Quote and appear in the report.
+
+Calls default to `max_price_sats: 0`. A paid Lightning call requires an explicit
+ceiling and the requester's configured wallet and cumulative budget. A timeout
+returns an existing `deal_id` when admission was persisted; `get_task` reads
+that reference without submitting work or authorizing payment. Reconcile an
+uncertain call using the same program, input, provider and retry key. A changed
+request with the same key is refused.
+
+The JavaScript bridge also forwards per-call price ceilings and retry keys.
+Its structured output carries result and signed evidence from the requester
+runtime. It does not independently verify signatures: a verification report
+must identify which component performed the checks. Legacy JavaScript calls may
+omit a retry key, but then lack an explicit recovery identity.
+
+Optional A2A transport is selected by the local Node's private configuration;
+agents keep using the same MCP compute action and provider reference. See the
+[interoperability specification](../../../docs/AGENT_INTEROPERABILITY_PLAN.md)
+for supported operations and the configured-counterparty boundary.
+
+For a repeatable source-checkout setup, run the
+[local MCP/A2A compute demo](../../../examples/README.md#local-mcp-and-a2a-compute-demo).
+It builds the checkout, starts separate loopback Nodes, scopes private A2A
+credentials to Alice's identity and Bob's actual Offer, and calls native MCP.
+Use a binary built from this checkout or a release containing `run_compute` and
+the optional A2A adapter; the presence of these instructions does not prove an
+older installed binary has those features.
 
 ### Local npm profile
 
@@ -102,9 +166,10 @@ After health checks pass, `plan_use_case` returns a bounded first-workflow plan
 and names unsupported edges before execution. In particular, true batch
 fan-out, GPU scheduling/provider selection, marketplace GPU routing, and
 production capacity management are still separate implementation work.
-Self-hosted GPU capability metadata, generic-compute offer metadata, Docker
-`--gpus all` gating, no-CPU-fallback errors, and one GCP T4 container workload
-with a signed receipt are verified for explicitly configured GPU providers.
+Historical GPU metadata and a GCP T4 smoke belong to an earlier execution path.
+The current isolated worker refuses GPU execution. Those observations do not
+qualify GPU rental, device isolation or the current disabled path. See the
+[staged CPU/GPU scope](../../../docs/FILE_AND_COMPUTE_SCOPE.md).
 
 ### Explicit local npm profile
 

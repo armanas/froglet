@@ -26,8 +26,23 @@ Froglet v1 is a small economic primitive for short-lived, bounded, fixed-price r
 2. **Offer** — specific service with pricing and execution profile
 3. **Quote** — priced workload for a specific requester (ephemeral)
 4. **Deal** — requester commitment (signed by requester)
-5. **InvoiceBundle** — Lightning payment instructions (two legs)
-6. **Receipt** — terminal proof of execution and settlement
+5. **InvoiceBundle** — Lightning escrow payment instructions (two legs), when applicable
+6. **Receipt** — signed terminal report of execution and settlement
+
+A free exchange uses five artifacts and omits the InvoiceBundle. These records
+authenticate commitments and the provider's reported outcome; they do not
+independently prove that an arbitrary computation was performed correctly.
+
+## How one artifact is signed
+
+Every artifact is a signed envelope around a payload:
+
+1. `payload_hash` is the SHA-256 of the payload in RFC 8785 canonical JSON.
+2. The signing bytes are the canonical JSON of `[schema_version, artifact_type, signer, created_at, payload_hash, payload]`.
+3. The artifact's `hash` is the SHA-256 of those bytes. It is the artifact's identity, used by the relationships that bind the signed records together.
+4. The signature is BIP-340 Schnorr over that 32-byte digest. The signer is an x-only secp256k1 public key.
+
+The [conformance vectors](/spec/conformance/) record the exact signing bytes in hex, so an implementation can find its first differing byte. Where this summary and a vector disagree, the vector wins.
 
 ## Settlement methods
 

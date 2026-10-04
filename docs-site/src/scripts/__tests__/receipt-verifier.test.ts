@@ -1,8 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { beforeAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { initSync } from '../../generated/verifier/froglet_verify.js';
 import sample from '../../generated/verifier/free-chain.json';
 import { initReceiptVerifier, reportSummary, sampleJson, verifyJson } from '../receipt-verifier';
+import { repoRoot } from './route-helpers';
 
 beforeAll(() => {
   initSync({ module: readFileSync('src/generated/verifier/froglet_verify_bg.wasm') });
@@ -110,5 +112,33 @@ describe('browser WASM verifier against the public canonical chain', () => {
   it('handles empty and malformed input without presenting a success', () => {
     expect(reportSummary(verifyJson('{'))).toContain('Could not verify');
     expect(reportSummary(verifyJson('{"artifacts":[]}'))).toBe('No artifacts supplied.');
+  });
+});
+
+describe('browser WASM verifier against a page a real node served', () => {
+  // The body of GET /v1/feed from a fresh dual-role node: index entries that carry each signed artifact under
+  // `document`. The Rust verifier's tests use the same file, so the CLI, the library and this build agree.
+  const served = readFileSync(resolve(repoRoot, 'froglet-verify/tests/fixtures/node_feed_page.json'), 'utf8');
+  it('accepts the page exactly as served and verifies every artifact on it', () => {
+    const report = verifyJson(served);
+    expect(report.error).toBeUndefined();
+    expect(report.artifacts.map(a => a.artifact_type)).toEqual(['descriptor', 'offer', 'offer', 'offer']);
+    expect(report.artifacts.every(a => a.status === 'verified' && a.envelope_valid)).toBe(true);
+    // A public feed holds a descriptor and offers, not a whole deal, so no chain is claimed.
+    expect(report.chain_evaluated).toBe(false);
+    expect(report.valid).toBe(false);
+    expect(reportSummary(report)).toContain('complete, unambiguous chain was not supplied');
+  });
+  it('still fails a served page whose document was changed after it was signed', () => {
+    const page = JSON.parse(served);
+    page.artifacts[1].document.created_at += 1;
+    const report = verifyJson(JSON.stringify(page));
+    expect(report.artifacts.map(a => a.status)).toEqual(['verified', 'invalid', 'verified', 'verified']);
+    expect(reportSummary(report)).toContain('Verification failed');
+  });
+  it('does not unwrap an entry whose document is not an artifact', () => {
+    const report = verifyJson(JSON.stringify({ artifacts: [{ cursor: 1, hash: 'aa', document: {} }] }));
+    expect(report.error).toBe('item is not an artifact document (no artifact_type)');
+    expect(reportSummary(report)).toContain('Could not verify');
   });
 });

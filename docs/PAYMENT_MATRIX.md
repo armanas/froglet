@@ -1,8 +1,8 @@
 # Payment Verification Matrix
 
 Status: living document.
-Last refreshed: 2026-07-10 (v0.4.x line; Stripe requester/SPT hardening focused
-gates refreshed).
+Scope wording refreshed: 2026-10-01. Historical rail verification dates below
+are unchanged; this documentation correction does not claim a new payment run.
 
 > [!WARNING]
 > **Staleness advisory (per § 7's own rule):** most 🟢 cells below carry
@@ -33,12 +33,18 @@ narrative) supports **free (`none`), Lightning, and Stripe** settlement:
   node. A production requester must supply an SPT issued by an authorized
   agentic-commerce platform. The built-in SPT helper is an explicitly enabled
   seller-side Stripe sandbox simulation and always rejects live keys.
-- x402 is defined in the protocol kernel and supported by its settlement
-  driver at runtime, but is **not yet exposed on the publish path**. Operators
-  can still issue x402 offers via the lower-level provider API.
+- x402 has kernel semantics, conformance vectors and a separate direct HTTP
+  payment endpoint/driver, but is **not admitted by the signed Quote/Deal flow**.
+  `accepted_payment_methods` in `src/api/mod.rs` filters out `x402_usdc`, and
+  priced Kernel Deals require Lightning or Stripe. A lower-level endpoint is
+  not an interchangeable x402 Offer → Quote → Deal purchase path.
 
 The hosted Lightning + Stripe rows below are evidence for the code paths now
-reachable from publish; x402 remains lower-level only.
+reachable from publish; x402 remains a separate endpoint. The current native
+MCP `run_compute` paid action follows its Lightning wallet path and does not
+accept caller-supplied Stripe payment tokens. Free local MCP/A2A evidence does
+not qualify paid operation of that profile. Payment expansion and automatic
+allowance refill remain deferred.
 
 ## 1. Supported rails and modes
 
@@ -48,9 +54,9 @@ Four payment backends live in [src/config.rs](../src/config.rs)'s
 
 | Backend | Driver | Modes | Purpose |
 | --- | --- | --- | --- |
-| `None` | [none.rs](../src/settlement/none.rs) | — | Free-only deals. Used in local compose smoke, conformance tests, and the public `try.froglet.dev` demo catalog. |
+| `None` | [none.rs](../src/settlement/none.rs) | — | Free-only deals. Used in local scenarios and conformance tests; the public hosted compute trial is currently unavailable. |
 | `Lightning` | [lightning.rs](../src/settlement/lightning.rs) + [phoenixd.rs](../src/settlement/phoenixd.rs) | `Mock`, `LndRest`, `Phoenixd` | BOLT11 invoices for local/self-hosted nodes. `Mock` is deterministic + in-memory for unit tests; `LndRest` talks to any LND REST endpoint and uses **hold-invoice escrow** (`lightning.base_fee_plus_success_fee.v1`, pay-on-success); `Phoenixd` is the self-custodial ACINQ daemon and uses **prepaid** settlement (`lightning.prepaid.v1`, pay-upfront, no escrow). |
-| `X402` | [x402.rs](../src/settlement/x402.rs) | — | Local/self-hosted HTTP 402 challenge/response; a lightweight cryptographic settlement rail suitable for agent-to-agent calls. |
+| `X402` | [x402.rs](../src/settlement/x402.rs) | — | Experimental separate HTTP 402 challenge/response. Not admitted for priced signed Kernel Deals; no live-network transcript. |
 | `Stripe` | [stripe.rs](../src/settlement/stripe.rs) | — | Local/self-hosted fiat via Shared Payment Tokens and Stripe PaymentIntents. The provider's Stripe account is paid directly; Froglet has no marketplace payout or Connect/platform-fee layer. |
 
 "Modes" are a property of the Lightning backend; the other backends are
@@ -71,7 +77,7 @@ explicit trade-off:
   strictly stronger than Stripe (attested, not cryptographic). Both buyer and
   seller can run phoenixd for a fully self-custodial agent-to-agent exchange.
 
-**Buyer-side spend policy (all rails):** every paid deal a node creates as a
+**Buyer-side spend policy (admitted paid Deal rails):** every paid deal a node creates as a
 buyer is gated by the requester spend policy *before* any money moves —
 `FROGLET_REQUESTER_SPEND_BUDGET_MSAT` (cumulative, persistently tracked) and
 `FROGLET_REQUESTER_MAX_DEAL_MSAT` (per-deal). Fail-closed: with no budget set,
@@ -96,7 +102,8 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 | `Stripe` (SPT/PaymentIntents) | 🟢 Focused hardening gates 4/4 passed on 2026-07-10: strict SPT path-segment validation, explicit sandbox-helper guard, and both caller-SPT runtime branches. The older broad Stripe suite remains subject to the staleness advisory | 🟢 Stripe driver uses a **local mock HTTP server**. On 2026-07-10, the sandbox helper test proved explicit opt-in + `sk_test_` + seller scope and both full-deal tests proved missing-SPT refusal and supplied-SPT settlement without a helper call | 🟡 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30 (last refresh); this point-in-time evidence is stale and predates the current SPT hardening | ⬜ No live-money publication transcript. Stripe Agentic Commerce/SPTs remain private preview, so paid publication must not be presented as generally available | 🟢 Missing/invalid SPT, live-key helper use, non-loopback helper override, and absent caller SPT fail closed before helper I/O in focused 2026-07-10 tests. Post-capture refunds remain an operator action through Stripe, not an automated Froglet flow | 🟡 VM-backed replay evidence from 2026-04-30 has not been re-verified on the current branch | 🟢 settlement state via MCP |
 
 Hosted paid cells are intentionally separate from `try.froglet.dev`. The public
-hosted proof stays free-only; Stripe hosted-sandbox evidence comes from
+hosted compute proof is currently unavailable; the historical free-only proof
+does not establish current availability. Stripe hosted-sandbox evidence comes from
 `paid-staging.froglet.dev` and
 `../froglet-services/ops/paid_staging_stripe_smoke.sh`.
 

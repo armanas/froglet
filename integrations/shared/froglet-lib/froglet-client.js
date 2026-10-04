@@ -22,6 +22,7 @@ const CONTRACT_CONTAINER_JSON_V1 = "froglet.container.stdin_json.v1"
 const CONTRACT_PYTHON_HANDLER_JSON_V1 = "froglet.python.handler_json.v1"
 const CONTRACT_PYTHON_SCRIPT_JSON_V1 = "froglet.python.script_json.v1"
 const DEFAULT_PROVIDER_DOMAIN_SUFFIX = "providers.froglet.dev"
+const MAX_IDEMPOTENCY_KEY_BYTES = 128
 const TERMINAL_DEAL_STATES = new Set(["succeeded", "failed", "rejected", "cancelled", "completed", "done", "error"])
 const TERMINAL_TASK_STATES = new Set(["succeeded", "failed", "rejected", "cancelled", "completed", "done", "error"])
 
@@ -1225,6 +1226,7 @@ async function resolveRemoteService({
 function normalizeRuntimeDealCreation(response) {
   const deal = response?.deal ?? {}
   const normalized = {
+    ...response,
     provider_id: response?.provider_id,
     provider_url: response?.provider_url,
     quote: response?.quote,
@@ -1251,8 +1253,29 @@ function normalizeRuntimeDealCreation(response) {
 function normalizeRuntimeTaskResponse(response) {
   const deal = response?.deal ?? {}
   return {
+    ...response,
     task: deal,
     deal,
+  }
+}
+
+function runtimeDealControls(request) {
+  const maxPriceSats = request?.max_price_sats === undefined ? 0 : request.max_price_sats
+  if (!Number.isSafeInteger(maxPriceSats) || maxPriceSats < 0) {
+    throw new Error("max_price_sats must be a non-negative safe integer; omit it for free-only execution")
+  }
+  const key = request?.idempotency_key
+  if (key !== undefined && (typeof key !== "string" || key.trim().length === 0)) {
+    throw new Error("idempotency_key must be a non-empty string")
+  }
+  if (key !== undefined && Buffer.byteLength(key, "utf8") > MAX_IDEMPOTENCY_KEY_BYTES) {
+    throw new Error(`idempotency_key must not exceed ${MAX_IDEMPOTENCY_KEY_BYTES} UTF-8 bytes`)
+  }
+  // Keep the caller's exact retry identity. Generating or trimming a key here
+  // would make retry behavior differ from the runtime's durable lookup.
+  return {
+    max_price_sats: maxPriceSats,
+    ...(key !== undefined ? { idempotency_key: key } : {}),
   }
 }
 
@@ -1785,9 +1808,16 @@ async function createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeou
     "/v1/runtime/deals",
     {
       jsonBody,
-      expectedStatuses: [200, 201, 402],
+      expectedStatuses: [200, 201, 402, 409],
     }
   )
+  if (status === 409) {
+    const error = new Error(`Request to ${runtimeUrl}/v1/runtime/deals failed with 409: ${JSON.stringify(payload)}`)
+    error.httpStatus = status
+    error.payload = payload
+    if (typeof payload?.code === "string") error.code = payload.code
+    throw error
+  }
   if (status === 402) {
     const code = typeof payload?.code === "string" ? payload.code : null
     if (code && code.startsWith("spend_")) {
@@ -1796,11 +1826,15 @@ async function createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeou
         typeof payload?.remaining_msat === "number" ? ` remaining_msat=${payload.remaining_msat}.` : ""
       const error = new Error(`Deal refused by the requester spend policy (${code}): ${detail}.${remaining}`)
       error.code = code
+      error.httpStatus = status
       error.payload = payload
       throw error
     }
     // Non-spend 402s (e.g. missing buyer wallet) keep the legacy error shape.
-    throw new Error(`Request to ${runtimeUrl}/v1/runtime/deals failed with 402: ${JSON.stringify(payload)}`)
+    const error = new Error(`Request to ${runtimeUrl}/v1/runtime/deals failed with 402: ${JSON.stringify(payload)}`)
+    error.httpStatus = status
+    error.payload = payload
+    throw error
   }
   return payload
 }
@@ -1821,6 +1855,7 @@ export async function invokeService({
   trustedProviderAuthTokenPath = null,
   _deps = {},
 }) {
+  const controls = runtimeDealControls(request)
   const resolved = await resolveRemoteService({
     runtimeUrl,
     runtimeAuthTokenPath,
@@ -1832,6 +1867,7 @@ export async function invokeService({
     _deps,
   })
   const response = await createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, {
+    ...controls,
     provider: {
       provider_id: resolved.providerId,
       provider_url: resolved.providerUrl,
@@ -1858,6 +1894,7 @@ export async function runCompute({
   trustedProviderAuthTokenPath = null,
   _deps = {},
 }) {
+  const controls = runtimeDealControls(request)
   if (typeof request?.artifact_path === "string" && request.artifact_path.trim().length > 0) {
     throw new Error("run_compute via runtime deals does not support artifact_path; provide inline bytes/source or OCI coordinates")
   }
@@ -1911,6 +1948,7 @@ export async function runCompute({
   }
   const offerId = spec.kind === "execution" ? "execute.compute.generic" : "execute.compute"
   const response = await createRuntimeDeal(runtimeUrl, runtimeAuthTokenPath, requestTimeoutMs, {
+    ...controls,
     provider: {
       ...(provider.providerId ? { provider_id: provider.providerId } : {}),
       provider_url: provider.providerUrl,

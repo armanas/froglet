@@ -20,6 +20,13 @@ export function reportSummary(report: VerificationReport): string {
   return 'Chain verification failed. Review the report below.';
 }
 
+let loading: Promise<unknown> | undefined;
+
+/** Loads the WebAssembly verifier once; a failed load can be retried. */
+export function loadVerifier(): Promise<unknown> {
+  return (loading ??= init().catch(error => { loading = undefined; throw error; }));
+}
+
 export function verifyJson(json: string): VerificationReport {
   // Historical evidence is checked without a wall clock; expiration is not an
   // assertion that an old receipt's signature or historical agreement is invalid.

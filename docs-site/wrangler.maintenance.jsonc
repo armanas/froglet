@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "froglet-docs",
+  "main": "./src/maintenance-worker.ts",
+  "compatibility_date": "2026-04-22",
+  "vars": { "FROGLET_SITE_ORIGIN": "https://froglet.dev" },
+  "kv_namespaces": [
+    { "binding": "SERVICE_LINK_CACHE", "id": "30c8ba54807649d6b4042a11e4f105f2" }
+  ],
+  // Deliberately no asset binding: every route must reach the temporary page.
+  "routes": [
+    { "pattern": "froglet.dev", "custom_domain": true }
+  ]
+}

@@ -2,7 +2,11 @@
 
 Accepts a single artifact object, a JSON array of artifacts, or a
 ``{"artifacts": [...]}`` page (matching the shape used elsewhere in this
-package's own fixtures/tests) and:
+package's own fixtures/tests). The page a node serves at ``/v1/feed`` is
+accepted as served: its entries carry the signed artifact under ``document``,
+and that document is what is verified.
+
+For the artifacts it is given, the CLI:
 
 1. Verifies the envelope (:func:`froglet_verify.envelope.verify_signed_artifact`)
    and, for the six recognized kinds, the per-kind semantics
@@ -45,6 +49,20 @@ class _UsageError(Exception):
     pass
 
 
+def _unwrap_feed_entry(item: Any) -> Any:
+    """The signed artifact inside a node's ``/v1/feed`` entry.
+
+    A node serves each feed item as an index entry (``cursor``, ``hash``,
+    ``kind``, ...) with the artifact under ``document``. Anything that is not
+    such an entry is returned unchanged, so it is still reported as it was.
+    """
+    if isinstance(item, dict) and "artifact_type" not in item:
+        inner = item.get("document")
+        if isinstance(inner, dict) and "artifact_type" in inner:
+            return inner
+    return item
+
+
 def _load_artifacts(source: str) -> list[Any]:
     if source == "-":
         text = sys.stdin.read()
@@ -63,10 +81,10 @@ def _load_artifacts(source: str) -> list[Any]:
     if isinstance(data, dict):
         maybe_page = data.get("artifacts")
         if isinstance(maybe_page, list):
-            return maybe_page
-        return [data]
+            return [_unwrap_feed_entry(item) for item in maybe_page]
+        return [_unwrap_feed_entry(data)]
     if isinstance(data, list):
-        return data
+        return [_unwrap_feed_entry(item) for item in data]
     raise _UsageError(
         "input JSON must be a single artifact object, an array of artifacts, "
         'or a {"artifacts": [...]} page'
@@ -125,10 +143,11 @@ def _verify_one(doc: Any) -> dict[str, Any]:
     }
 
 
-def _group_by_kind(artifacts: list[Any]) -> dict[Any, list[Any]]:
-    grouped: dict[Any, list[Any]] = {}
+def _group_by_kind(artifacts: list[Any]) -> dict[str | None, list[Any]]:
+    grouped: dict[str | None, list[Any]] = {}
     for doc in artifacts:
-        kind = doc.get("artifact_type") if isinstance(doc, dict) else None
+        raw_kind = doc.get("artifact_type") if isinstance(doc, dict) else None
+        kind = raw_kind if isinstance(raw_kind, str) else None
         grouped.setdefault(kind, []).append(doc)
     return grouped
 

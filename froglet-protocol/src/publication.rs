@@ -106,6 +106,7 @@ pub enum PublicationDataFormat {
     Json,
     Csv,
     Sqlite,
+    File,
 }
 
 impl fmt::Display for PublicationDataFormat {
@@ -114,6 +115,7 @@ impl fmt::Display for PublicationDataFormat {
             Self::Json => "json",
             Self::Csv => "csv",
             Self::Sqlite => "sqlite",
+            Self::File => "file",
         })
     }
 }
@@ -1754,12 +1756,22 @@ impl PublicationIntent {
                         "CSV data_source requires csv_schema".to_string(),
                     ));
                 }
-                (PublicationDataFormat::Json | PublicationDataFormat::Sqlite, Some(_)) => {
+                (
+                    PublicationDataFormat::Json
+                    | PublicationDataFormat::Sqlite
+                    | PublicationDataFormat::File,
+                    Some(_),
+                ) => {
                     return Err(PublicationIntentError::InvalidDataSource(
                         "csv_schema is only valid for CSV data sources".to_string(),
                     ));
                 }
-                (PublicationDataFormat::Json | PublicationDataFormat::Sqlite, None) => {}
+                (
+                    PublicationDataFormat::Json
+                    | PublicationDataFormat::Sqlite
+                    | PublicationDataFormat::File,
+                    None,
+                ) => {}
             }
         }
         if let Some(python_bundle) = &self.python_bundle {

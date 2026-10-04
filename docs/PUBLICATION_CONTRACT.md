@@ -17,6 +17,7 @@ schema is in [`openapi.yaml`](openapi.yaml).
 | Publication revision | `froglet.publication-revision.v1` | Provider-signed statement binding an existing offer to executable bytes, resolved limits, typed price terms, and successful local verification |
 | Service manifest | `froglet-service/v4` | Provider-neutral authoring contract; see [`MANIFEST.md`](MANIFEST.md) |
 | Relay reachability lease | Relay ingress v1 (`froglet-relay-auth/v1` + `frame.v1`) | Identity-authenticated live relay session; see [`RELAY.md`](RELAY.md) |
+| Download-only file | `froglet.builtin.file_download.v1` | Immutable, bounded file bytes plus signed metadata; enabled only with finite provider file limits |
 | Release Bundle | `froglet.release-bundle.v1` | Attested manifest pinning source, binary assets, and role images |
 
 Current authoring adapters emit the publication-intent version explicitly.
@@ -573,3 +574,39 @@ shape with missing-section warnings.
 | Payment works | Completed rail-specific payment and receipt evidence |
 
 None of these claims implies the next one.
+
+## Download-only file contract
+
+A file publication uses existing `builtin` runtime/package fields and
+`data_source.format = "file"`. `content_base64` transports the application
+package to the authenticated publication endpoint; it is never a catalog or
+file-download response. Native preparation builds this package from one regular
+file. The package layout is ASCII `FROGLET-FILE-V1\n`, a four-byte big-endian
+metadata length, canonical JCS JSON metadata, then the raw file bytes.
+Metadata is capped at 4096 bytes and raw content at 8 MiB. Unknown metadata
+fields and noncanonical encodings are rejected.
+
+Metadata contains `filename`, `media_type`, `size_bytes`, `sha256`, `expires_at`,
+`max_downloads`, and `max_transfer_bytes`. The filename is a portable ASCII
+basename; media type has no parameters. SHA-256 describes the raw bytes, while
+the publication's existing module/binding digest covers the complete package.
+The service output schema is `{ "type": "object", "const": <metadata> }` and
+is included in the provider-signed Publication Revision. This adds no Kernel
+artifact fields or signing rules.
+
+The only execution input is `{ "action": "describe" }`; its result is metadata.
+Publication verifies this fixture locally. File bytes instead use the separately
+admitted `GET /v1/provider/services/{service_id}/files/{revision}/download`
+endpoint. A relay grant must match the service and revision in one grant.
+The route requires current activation, valid signed metadata, free settlement,
+provider access, unexpired metadata, available storage and a transactionally
+reserved global plus snapshot transfer allowance. HEAD performs access checks
+without file reservation. OPTIONS supports the first-party share-page origin.
+
+Responses are attachments with `application/octet-stream`, `nosniff`, `no-store`,
+length, SHA-256 and ETag. Range requests are refused. Pause, unpublish and
+invitation revocation stop new admissions. Already admitted responses may finish;
+an explicit owner abort interrupts active node streams without refunding usage.
+File download is an operational transfer, not a fabricated signed execution
+receipt. See [configuration](CONFIGURATION.md#download-only-file-publications)
+for limits, preparation and native recipient commands.

@@ -1,0 +1,13 @@
+---
+/**
+ * Preloads the two latin variable fonts the site renders text with, so text does
+ * not wait for the stylesheet to discover them. The @font-face rules live in
+ * tokens.css (via @fontsource-variable); `?url` makes Astro emit the same hashed
+ * file the CSS points at, so this URL cannot drift out of sync with it.
+ */
+import interLatin from '@fontsource-variable/inter/files/inter-latin-wght-normal.woff2?url';
+import monoLatin from '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url';
+---
+
+<link rel="preload" href={interLatin} as="font" type="font/woff2" crossorigin />
+<link rel="preload" href={monoLatin} as="font" type="font/woff2" crossorigin />

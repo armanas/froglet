@@ -1,0 +1,14 @@
+[package]
+name = "ontology-check"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "A froglet.wasm.run_json.v1 service: checks illustrative term mappings"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"

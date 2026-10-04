@@ -1,20 +1,47 @@
 ---
-/**
- * Initializer component for the identity diagram canvas.
- * Wraps the module import in an Astro-processed <script> tag
- * so Vite can bundle the identity-diagram.ts module.
- */
+import { ELEMENTS } from '../scripts/identity-diagram';
 ---
+
+<div id="identity-diagram" class="identity-diagram" role="group" aria-label="From private key to node identity">
+  {ELEMENTS.map((element, index) => <>
+    {index > 0 && <span class="identity-operation" aria-hidden="true"><span class="identity-arrow">→</span>{index === 1 ? 'secp256k1 · G' : 'x-only hex'}</span>}
+    <button type="button" data-identity-index={index} aria-pressed={index === 0 ? 'true' : 'false'} aria-controls="identity-detail">
+      <strong>{element.label}</strong><span>{element.sub}</span>
+    </button>
+  </>)}
+</div>
+<div id="identity-detail" class="learn-card plot-detail" aria-live="polite">
+  <strong>{ELEMENTS[0].label}</strong><p>{ELEMENTS[0].detail}</p>
+</div>
+<noscript><p>Public keys verify signatures. Node IDs encode public keys as 64 lowercase hexadecimal characters.</p></noscript>
 
 <script>
   import { initIdentityDiagram } from '../scripts/identity-diagram';
 
-  const canvas = document.querySelector<HTMLCanvasElement>('#identity-diagram');
+  const diagram = document.getElementById('identity-diagram');
   const detailEl = document.getElementById('identity-detail');
 
-  if (canvas && detailEl) {
-    initIdentityDiagram(canvas, detailEl);
+  if (diagram && detailEl) {
+    initIdentityDiagram(diagram, detailEl);
   } else {
     console.warn('[identity-diagram] required DOM elements not found');
   }
 </script>
+
+<style>
+  .identity-diagram { display: flex; align-items: center; gap: 10px; margin: 24px 0 16px; }
+  .identity-diagram button { flex: 1; min-width: 0; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-elevated); color: var(--fg1); padding: 18px 8px; cursor: pointer; font: inherit; }
+  .identity-diagram button[aria-pressed="true"] { border-color: var(--frog-400); background: var(--bg-elevated-2); }
+  .identity-diagram button:focus-visible { outline: 2px solid var(--frog-400); outline-offset: 4px; }
+  .identity-diagram strong { display: block; font: 600 14px var(--font-mono); }
+  .identity-diagram button span { display: block; margin-top: 6px; color: var(--fg2); font-size: 13px; }
+  .identity-operation { flex: 0 0 78px; color: var(--fg2); text-align: center; font-size: 12px; }
+  .identity-arrow { display: block; font-size: 24px; }
+  #identity-detail p { margin: 8px 0 0; }
+  @media (max-width: 1100px) {
+    .identity-diagram { flex-direction: column; }
+    .identity-diagram button { width: 100%; }
+    .identity-operation { flex: auto; display: flex; align-items: center; gap: 12px; }
+    .identity-arrow { transform: rotate(90deg); }
+  }
+</style>

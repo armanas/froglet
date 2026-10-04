@@ -10,6 +10,102 @@ Lightning rail and MCP registry distribution.
 
 ## [Unreleased]
 
+## [0.4.7-beta.1] - Prepared 2026-10-03
+
+This section records the beta candidate at preparation, before immutable
+publication. Its compute and interoperability evidence is local; new hosted compute, fresh
+agent-host sessions, clean-machine installation and paid operation still need
+their own qualification. Website publication does not establish those gates.
+
+### Added
+
+- Native MCP `run_compute` and `get_task` for requester-supplied bounded Wasm,
+  including a local module-path option. An optional A2A 1.0 adapter carries
+  Froglet's signed transactions between explicitly configured requester keys
+  and exact Offer hashes. It is disabled by default and supports polling,
+  without cancellation, streaming or public federation.
+- Explicit selected-data research declarations for field types, namespaces,
+  versions, units and provenance. These compare declared metadata; they do not
+  establish ontology alignment or scientific correctness.
+- A shared website functionality matrix separates current source support,
+  local qualification, experimental paths, disabled capabilities and plans.
+- A provider-only Fly smoke helper requires an exact released image digest,
+  expected node version and explicit organization. Its default private profile
+  allows no work and checks authenticated controls and anonymous refusals;
+  reachability does not qualify computation or payments.
+
+- `froglet-wasm`: the signing half of the kernel compiled for the browser
+  (fresh identities, artifact signing for the five free-deal artifacts, and
+  canonical hashing). It reproduces the descriptor, offer, quote, deal, and
+  receipt vectors byte for byte and is a thin layer over `froglet-protocol`.
+  It runs the in-tab provider and consumer playground on the Developers page.
+  No protocol, hashing, signing, or artifact change.
+- The Developers-page playground has an editor. Bob's functions are
+  TypeScript-like AssemblyScript that the page compiles, in the tab, to a
+  `froglet.wasm.run_json.v1` module that imports nothing, then publishes and
+  runs. The compiler is loaded from the site's own origin, in a Worker, the
+  first time someone compiles. Two opt-in tests, which need a built
+  `froglet-node`, check the playground against a real node: one has a node's
+  requester call the tab's provider, and the other has a node run the modules
+  the editor compiles and compares its answers, receipts, and failures with the
+  tab's.
+- `examples/wasm-services`: two dependency-free `froglet.wasm.run_json.v1`
+  sample services (an adder and a Fibonacci function), built for wasm32. The
+  playground's editor starts from AssemblyScript ports of them, and tests hold
+  the ports to the same answers.
+- `froglet-verify`: a test that an offer naming a runtime the kernel does not
+  have, such as `javascript`, is invalid though its signature and hashes are
+  genuine.
+
+### Fixed
+
+- Native `get_task` recovers persisted terminal results after provider shutdown
+  and requester restart, validating the signed Quote/Deal/Receipt chain and
+  cached result before returning it. Pending or unsigned outcomes still refresh
+  from the provider; reading a cached Receipt does not authorize new payments
+  or establish live payment-rail confirmation.
+- Release software checks report skipped required or requested work as
+  incomplete, require the core toolchain, and pass package arguments without
+  interpolating them into shell code. Local packaging rebuilds the current
+  Cargo version for the native host and rejects mismatched binary headers.
+  Release archives exclude macOS metadata and require complete checksums and
+  exactly the declared regular-file payload. Image publishing waits for the
+  operator-approved draft release.
+- Publication secret checks include non-ignored untracked source and the
+  candidate's history, with narrow annotations for reviewed public retry
+  labels. Social-card builds use licensed checked-in font inputs instead of
+  mutable remote font downloads.
+- Website CI exercises both real-node playground directions. Runtime-only
+  identity checks use the identity API instead of a provider startup message;
+  missing-page metadata is excluded from indexing.
+- Repository-only onboarding fixtures isolate inherited Froglet settings and
+  check that existing unrelated agent configuration remains unchanged.
+- Release qualification exercises the freshly built optimized node, including
+  the required CI example matrix, without changing signed execution budgets.
+  Unexpected example statuses report the verified failure code and budget;
+  browser publication tests await compilation completion before checking the
+  exact published service.
+- Release metadata checks include both npm locks and MCP Registry versions.
+  CI audits the root npm distribution dependency tree as well as the nested
+  MCP server tree. Compatible dependency updates remove the known advisories
+  from those two trees; Wasmtime is updated to the patched `36.0.17` line and
+  Wrangler to `4.143.1` with patched Undici. The website cache library is
+  reviewed at `4.3.0`, whose separate Vary fixes do not change the disputed
+  max-stale/cookie behavior. A clean npm audit is not treated as behavioral
+  remediation; the actual deployment boundary remains guarded.
+
+- The Python offline verifier returns an invalid JSON report for malformed
+  artifact types in plain artifacts, arrays and wrapped feed entries. List or
+  object types previously crashed chain grouping before it emitted a report.
+- Payment and integration documentation distinguishes the separate x402 HTTP
+  adapter from the current signed Quote/Deal flow, which rejects that rail.
+
+- `froglet-verify` (the Rust library and CLI, its WebAssembly build, and the
+  Python verifier) reads a node's `/v1/feed` page as served: it verifies the
+  artifact under each entry's `document`. Piping a node's feed into the
+  verifier no longer needs `jq` and no longer fails with "item is not an
+  artifact document".
+
 ## [0.4.6-beta.4] - 2026-09-27
 
 ### Fixed

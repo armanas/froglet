@@ -1,0 +1,10 @@
+[package]
+name = "adder"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+description = "A froglet.wasm.run_json.v1 service: adds and multiplies two integers"
+
+[lib]
+crate-type = ["cdylib"]

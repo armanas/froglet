@@ -50,16 +50,16 @@ export const ARTIFACTS: ChainArtifact[] = [
     sub: 'payment',
     color: '#f5c518',
     signer: 'provider',
-    purpose: 'Two Lightning invoices — base fee (locks upfront) and success fee (settles on completion).',
+    purpose: 'Lightning escrow: the base fee settles before admission; the held success fee settles on requester acceptance.',
     hashLink: 'References deal by SHA-256 hash.',
   },
   {
     label: 'Receipt',
-    sub: 'proof',
+    sub: 'outcome',
     color: '#7ad954',
     signer: 'provider',
-    purpose: 'Terminal artifact. Cryptographic proof of execution, result hash, and settlement state.',
-    hashLink: 'References invoice bundle by SHA-256 hash.',
+    purpose: 'Terminal artifact. The provider’s signed report of execution, result hash, and settlement state. It does not prove computation truth.',
+    hashLink: 'References the Deal and Quote by SHA-256 hashes; payment references depend on the settlement method.',
   },
 ];
 
@@ -69,9 +69,9 @@ const LAYOUT = {
   arrowHead: 7,
   animationMs: 260,
   fonts: {
-    label: '700 12px "JetBrains Mono", ui-monospace, monospace',
-    sub: '500 10px "Inter", system-ui, sans-serif',
-    signer: '700 9px "JetBrains Mono", ui-monospace, monospace',
+    label: '700 12px "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace',
+    sub: '500 10px "Inter Variable", "Inter", system-ui, sans-serif',
+    signer: '700 9px "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, monospace',
   },
 } as const;
 

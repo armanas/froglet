@@ -158,6 +158,11 @@ and not a symlink. Revocation takes effect immediately; existing completed deals
 remain recoverable. Reuse the same idempotency key and input to reconcile an
 uncertain invocation; creating a new key requests new work.
 
+The legacy provider-deal status endpoint treats its opaque deal ID as a recovery
+capability: anyone possessing that ID can retrieve the deal’s status and saved
+result from the provider. Keep the ID private. Invitation expiry or revocation
+prevents new work but does not revoke this existing recovery capability.
+
 Native CLI/MCP recovery first checks the authenticated requester ledger using the
 key, original service/provider and canonical input hash. A saved completed result
 and verified receipt remain available after unpublish or provider shutdown,
@@ -166,6 +171,13 @@ A mismatched input/service/provider or lower price ceiling fails closed; a missi
 key follows normal admission. Pending records still need the provider to refresh
 status. Older runtimes without this read-only lookup fall back to their existing
 invocation path and cannot guarantee offline recovery.
+
+For a recipient using the optional A2A transport, the
+[reviewed counterparty setup helper](A2A_COUNTERPARTY_SETUP.md) prepares the
+separate requester-key/exact-Offer A2A configuration alongside an already-issued
+admission invitation. Both credentials are required under invite policy. The
+helper writes private configuration files after review; it does not activate a
+running Node, narrow this provider-wide invitation, or put credentials in links.
 
 ## Current boundaries
 

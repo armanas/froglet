@@ -3,6 +3,52 @@
 
 import type { Step, BoardNode, BoardArrow, BoardNote } from './steps';
 
+/** Dark palette, matching tokens.css. */
+const DARK_PALETTE = {
+  bg: '#0a0d0a', // very rich solid dark green-black background
+  grid: 'rgba(232, 237, 230, 0.035)', // sharp, clean grid line
+  text: '#e8ede6', // high-contrast crisp text
+  muted: 'rgba(154, 164, 151, 0.72)', // clean muted labels
+  accent: '#52c72a', // crisp green highlights
+  accentDim: 'rgba(82, 199, 42, 0.08)',
+  warn: '#f5c518',
+  frame: 'rgba(232, 237, 230, 0.06)',
+  labelBackplate: '#0a0d0a', // solid background for text blocks
+  labelStroke: 'rgba(82, 199, 42, 0.2)',
+  highlightFill: 'rgba(82,199,42,0.12)',
+  defaultFill: 'rgba(23,27,24,0.7)',
+  highlightStroke: '#a8e88a',
+  defaultStroke: 'rgba(232,237,230,0.6)',
+} as const;
+
+/**
+ * Light palette for `html[data-theme='light']`. Green text and strokes use the
+ * darker frog-700 so labels keep at least 4.5:1 contrast on the light scene.
+ */
+const LIGHT_PALETTE = {
+  bg: '#f2f1ea',
+  grid: 'rgba(26, 29, 26, 0.05)',
+  text: '#1a1d1a',
+  muted: 'rgba(85, 91, 85, 0.92)',
+  accent: '#266611',
+  accentDim: 'rgba(38, 102, 17, 0.08)',
+  warn: '#7a5c00',
+  frame: 'rgba(26, 29, 26, 0.10)',
+  labelBackplate: '#f2f1ea',
+  labelStroke: 'rgba(38, 102, 17, 0.28)',
+  highlightFill: 'rgba(38, 102, 17, 0.10)',
+  defaultFill: 'rgba(255, 255, 255, 0.8)',
+  highlightStroke: '#266611',
+  defaultStroke: 'rgba(26, 29, 26, 0.55)',
+} as const;
+
+export type WhiteboardPalette = { readonly [K in keyof typeof DARK_PALETTE]: string };
+
+/** Pick the palette for the site theme (`data-theme` on <html>: 'light' | 'dark'). */
+export function whiteboardPalette(theme: string | null | undefined): WhiteboardPalette {
+  return theme === 'light' ? LIGHT_PALETTE : DARK_PALETTE;
+}
+
 /** Named constants for the clean visual workspace */
 export const WHITEBOARD = {
   NODE_RADIUS: 56,
@@ -11,25 +57,10 @@ export const WHITEBOARD = {
   FRAME_MARGIN: 16,
   ANIMATION_DURATION_MS: 1200,
   DASH_PATTERN: [5, 5] as readonly number[],
-  // Sleek dark-mode developer color system matching tokens.css
-  COLORS: {
-    bg: '#0a0d0a', // very rich solid dark green-black background
-    grid: 'rgba(232, 237, 230, 0.035)', // sharp, clean grid line
-    text: '#e8ede6', // high-contrast crisp text
-    muted: 'rgba(154, 164, 151, 0.72)', // clean muted labels
-    accent: '#52c72a', // crisp green highlights
-    accentDim: 'rgba(82, 199, 42, 0.08)',
-    warn: '#f5c518',
-    frame: 'rgba(232, 237, 230, 0.06)',
-    labelBackplate: '#0a0d0a', // solid background for text blocks
-    highlightFill: 'rgba(82,199,42,0.12)',
-    defaultFill: 'rgba(23,27,24,0.7)',
-    highlightStroke: '#a8e88a',
-    defaultStroke: 'rgba(232,237,230,0.6)',
-  },
+  COLORS: DARK_PALETTE,
   FONTS: {
-    hand: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace", // changed hand font to mono for premium crisp style
-    mono: "'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
+    hand: "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace", // changed hand font to mono for premium crisp style
+    mono: "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace",
   },
 } as const;
 
@@ -63,6 +94,8 @@ export function initWhiteboard(
   }
 
   const WB = WHITEBOARD;
+  // Re-read on every frame so a theme toggle repaints the scene immediately.
+  let COLORS: WhiteboardPalette = whiteboardPalette(document.documentElement.dataset.theme);
   let W = 0;
   let H = 0;
   let animationFrameId: number | null = null;
@@ -75,6 +108,11 @@ export function initWhiteboard(
 
   function logicalH(): number {
     return H / devicePixelRatio;
+  }
+
+  /** Shrink boxes and type on small scenes (phones) so the diagram is not clipped. */
+  function uiScale(): number {
+    return Math.min(1, Math.max(0.75, logicalW() / 560));
   }
 
   function resize(): void {
@@ -227,14 +265,15 @@ export function initWhiteboard(
   function drawBg(time: number): void {
     const ww = logicalW();
     const hh = logicalH();
+    COLORS = whiteboardPalette(document.documentElement.dataset.theme);
     ctx.clearRect(0, 0, ww, hh);
 
-    // Deep modern charcoal solid background
-    ctx.fillStyle = WB.COLORS.bg;
+    // Solid scene background (deep charcoal in dark, warm off-white in light)
+    ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, ww, hh);
 
     // Crisp high-precision fine grid
-    ctx.strokeStyle = WB.COLORS.grid;
+    ctx.strokeStyle = COLORS.grid;
     ctx.lineWidth = 1;
     const gridSize = 64;
     for (let x = 0; x < ww; x += gridSize) {
@@ -254,7 +293,7 @@ export function initWhiteboard(
     drawRect(
       WB.FRAME_MARGIN, WB.FRAME_MARGIN,
       ww - WB.FRAME_MARGIN * 2, hh - WB.FRAME_MARGIN * 2,
-      WB.COLORS.frame,
+      COLORS.frame,
       1,
     );
   }
@@ -268,8 +307,9 @@ export function initWhiteboard(
     const cy = nd.y * hh;
     const r = nd.small ? WB.NODE_RADIUS_SMALL : WB.NODE_RADIUS;
 
-    // Setup typeface sizing
-    const labelSize = nd.small ? 13 : 15;
+    // Setup typeface sizing (scaled down on small scenes)
+    const k = uiScale();
+    const labelSize = (nd.small ? 13 : 15) * k;
     ctx.font = `700 ${labelSize}px ${WB.FONTS.mono}`;
     ctx.textBaseline = 'middle';
 
@@ -278,13 +318,13 @@ export function initWhiteboard(
     const textWidth = ctx.measureText(labelText).width;
     
     // Nodes should be elegant rectangles with 24px padding on sides
-    const boxW = Math.max(nd.small ? 84 : 124, textWidth + 24);
-    const boxH = nd.small ? 38 : 56;
+    const boxW = Math.max((nd.small ? 84 : 124) * k, textWidth + 24 * k);
+    const boxH = (nd.small ? 38 : 56) * k;
 
     // Node Outline & Fill Animation (ease: 0.0 to 0.4)
     const boxProgress = Math.min(1, ease / 0.4);
-    const strokeColor = nd.highlight ? WB.COLORS.highlightStroke : WB.COLORS.defaultStroke;
-    const fillColor = nd.highlight ? WB.COLORS.highlightFill : WB.COLORS.defaultFill;
+    const strokeColor = nd.highlight ? COLORS.highlightStroke : COLORS.defaultStroke;
+    const fillColor = nd.highlight ? COLORS.highlightFill : COLORS.defaultFill;
     const lineWidth = nd.highlight ? 1.8 : 1.2;
 
     drawRectProgressive(
@@ -308,7 +348,7 @@ export function initWhiteboard(
           cy + boxH / 2,
           cx,
           lifelineEnd,
-          WB.COLORS.defaultStroke,
+          COLORS.defaultStroke,
           1,
           0.4 * lifelineProgress,
           true,
@@ -320,15 +360,15 @@ export function initWhiteboard(
     const labelProgress = Math.min(1, Math.max(0, (ease - 0.25) / 0.35));
     if (labelProgress > 0) {
       ctx.font = `700 ${labelSize}px ${WB.FONTS.mono}`;
-      ctx.fillStyle = nd.highlight ? WB.COLORS.accent : WB.COLORS.text;
+      ctx.fillStyle = nd.highlight ? COLORS.accent : COLORS.text;
       ctx.textBaseline = 'middle';
       
-      const labelY = cy - (nd.sub ? 8 : 0);
+      const labelY = cy - (nd.sub ? 8 * k : 0);
       drawTextCenteredProgressive(
         labelText,
         cx,
         labelY,
-        nd.highlight ? WB.COLORS.accent : WB.COLORS.text,
+        nd.highlight ? COLORS.accent : COLORS.text,
         labelProgress,
       );
     }
@@ -337,16 +377,16 @@ export function initWhiteboard(
     if (nd.sub) {
       const subProgress = Math.min(1, Math.max(0, (ease - 0.35) / 0.35));
       if (subProgress > 0) {
-        const subSize = nd.small ? 10 : 11;
+        const subSize = (nd.small ? 10 : 11) * k;
         ctx.font = `400 ${subSize}px ${WB.FONTS.mono}`;
-        ctx.fillStyle = WB.COLORS.muted;
+        ctx.fillStyle = COLORS.muted;
         
-        const subY = cy + (nd.small ? 10 : 13);
+        const subY = cy + (nd.small ? 10 : 13) * k;
         drawTextCenteredProgressive(
           nd.sub,
           cx,
           subY,
-          WB.COLORS.muted,
+          COLORS.muted,
           subProgress,
           0.85 * subProgress,
         );
@@ -381,12 +421,12 @@ export function initWhiteboard(
     const endY = y1 + ny * len * progress;
 
     // Draw neat crisp arrow line
-    drawLine(x1, y1, endX, endY, WB.COLORS.accent, 1.8, 0.9, dashed);
+    drawLine(x1, y1, endX, endY, COLORS.accent, 1.8, 0.9, dashed);
 
     // Arrowhead drawing
     if (progress > 0.92) {
       const angle = Math.atan2(dy, dx);
-      const headSize = WB.ARROW_HEAD_SIZE;
+      const headSize = WB.ARROW_HEAD_SIZE * uiScale();
       const headAngle = 0.38;
 
       const lx = endX - Math.cos(angle - headAngle) * headSize;
@@ -394,8 +434,8 @@ export function initWhiteboard(
       const rx = endX - Math.cos(angle + headAngle) * headSize;
       const ry = endY - Math.sin(angle + headAngle) * headSize;
 
-      drawLine(lx, ly, endX, endY, WB.COLORS.accent, 1.8, 0.9, false);
-      drawLine(rx, ry, endX, endY, WB.COLORS.accent, 1.8, 0.9, false);
+      drawLine(lx, ly, endX, endY, COLORS.accent, 1.8, 0.9, false);
+      drawLine(rx, ry, endX, endY, COLORS.accent, 1.8, 0.9, false);
 
       if (bidi) {
         const rAngle = angle + Math.PI;
@@ -404,8 +444,8 @@ export function initWhiteboard(
         const r2x = x1 - Math.cos(rAngle + headAngle) * headSize;
         const r2y = y1 - Math.sin(rAngle + headAngle) * headSize;
 
-        drawLine(l2x, l2y, x1, y1, WB.COLORS.accent, 1.8, 0.9, false);
-        drawLine(r2x, r2y, x1, y1, WB.COLORS.accent, 1.8, 0.9, false);
+        drawLine(l2x, l2y, x1, y1, COLORS.accent, 1.8, 0.9, false);
+        drawLine(r2x, r2y, x1, y1, COLORS.accent, 1.8, 0.9, false);
       }
     }
 
@@ -414,23 +454,23 @@ export function initWhiteboard(
       const mx = (x1 + endX) / 2;
       const my = (y1 + endY) / 2;
       ctx.save();
-      ctx.font = `600 12px ${WB.FONTS.mono}`;
+      ctx.font = `600 ${12 * uiScale()}px ${WB.FONTS.mono}`;
       ctx.textBaseline = 'middle';
       ctx.textAlign = 'center';
 
       const metrics = ctx.measureText(label);
-      const bgW = metrics.width + 12;
-      const bgH = 18;
+      const bgW = metrics.width + 12 * uiScale();
+      const bgH = 18 * uiScale();
 
-      ctx.fillStyle = WB.COLORS.labelBackplate;
+      ctx.fillStyle = COLORS.labelBackplate;
       ctx.fillRect(mx - bgW / 2, my - bgH / 2, bgW, bgH);
 
-      ctx.strokeStyle = 'rgba(82, 199, 42, 0.2)';
+      ctx.strokeStyle = COLORS.labelStroke;
       ctx.lineWidth = 1;
       ctx.strokeRect(mx - bgW / 2, my - bgH / 2, bgW, bgH);
 
-      ctx.fillStyle = WB.COLORS.accent;
-      drawText(label, mx, my, WB.COLORS.accent, Math.min(1, (progress - 0.4) * 5));
+      ctx.fillStyle = COLORS.accent;
+      drawText(label, mx, my, COLORS.accent, Math.min(1, (progress - 0.4) * 5));
       ctx.restore();
     }
   }
@@ -440,12 +480,12 @@ export function initWhiteboard(
     const hh = logicalH();
     const x = note.x * ww;
     const y = note.y * hh;
-    const sz = Math.min(13, note.size || 13);
+    const sz = Math.min(13, note.size || 13) * uiScale();
     const col =
-      note.color === 'accent' ? WB.COLORS.accent :
-      note.color === 'warn' ? WB.COLORS.warn :
-      note.color === 'muted' ? WB.COLORS.muted :
-      WB.COLORS.text;
+      note.color === 'accent' ? COLORS.accent :
+      note.color === 'warn' ? COLORS.warn :
+      note.color === 'muted' ? COLORS.muted :
+      COLORS.text;
 
     ctx.save();
     ctx.font = `400 ${sz}px ${WB.FONTS.mono}`;

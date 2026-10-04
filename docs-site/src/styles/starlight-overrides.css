@@ -24,8 +24,14 @@ body {
 	border-color: var(--border);
 }
 
-mjx-container {
+mjx-container[display="true"] {
+	display: block;
 	overflow-x: auto;
+}
+
+/* The shared SVG reset must not turn inline math into block content. */
+mjx-container:not([display="true"]) > svg {
+	display: inline;
 }
 
 /* ── Header ──────────────────────────────────────────────────────────── */

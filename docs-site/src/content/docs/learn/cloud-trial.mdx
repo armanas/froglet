@@ -1,7 +1,7 @@
 ---
 tableOfContents: false
-title: Try In Cloud
-description: Run a free example with your agent and inspect its result and signed receipt. No installation or payment required.
+title: Hosted Trial Status
+description: Current hosted demo limitations, a browser-verifiable sample, and the technical contract for retrying the trial.
 ---
 
 ## Start with a verifiable result
@@ -14,13 +14,15 @@ signed example records locally.
 
 [Verify a sample signed chain in your browser](/verify-receipt/). Select **Verify sample chain** to check every signature and hash link locally, then select **Check tampered sample** to see a changed receipt rejected. No installation, account, or payment is required. The sample is a public conformance fixture, not a live transaction.
 
-For a **fresh hosted transaction**, use the prompt below. The hosted flow runs `demo.add` and returns a signed receipt. It is a free, temporary demonstration; the API contract and manual steps follow the prompt.
+For your own data or tools, [start with the sharing walkthrough](/publish/). You do not need to complete a hosted trial first.
+
+The prompt below is for **rechecking availability**. If the host is working, its intended flow runs `demo.add` and returns a signed receipt. The API contract and manual steps remain available as technical reference; they do not establish current uptime.
 
 ## Prompt to paste into your LLM
 
-Use this when you want your model to inspect the hosted trial and decide
-whether Froglet is useful for your actual setup after it runs the hosted
-demo instead of giving a generic summary.
+Use this only when you want your model to recheck the hosted trial and report
+what actually works. An unavailable host is a reason to use the browser sample,
+not a reason to keep retrying the same failed setup.
 
 ```md wrap
 Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not access it, then give me an honest, evidence-backed assessment that reports the observed HTTP statuses, observed service IDs, observed deal status, observed result, whether a receipt was present, and any mismatch between these docs and live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.

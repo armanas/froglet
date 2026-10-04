@@ -1,14 +1,15 @@
 {
   "schema_version": "froglet.agent-tasks.v1",
   "name": "Froglet public agent task manifest",
-  "updated": "2026-09-26",
+  "updated": "2026-10-01",
   "purpose": "Give HTTP-capable agents exact Froglet task contracts, evidence boundaries, and report fields before they run or recommend a hosted or local Froglet workflow.",
   "canonical_sources": [
     "https://froglet.dev/llms.txt",
     "https://try.froglet.dev/llms.txt",
     "https://froglet.dev/learn/cloud-trial/",
     "https://froglet.dev/agent-tasks.json",
-    "https://froglet.dev/publish/agent.md"
+    "https://froglet.dev/publish/agent.md",
+    "https://froglet.dev/learn/agent-interoperability/"
   ],
   "default_task_id": "publish-service",
   "task_contracts": [
@@ -88,6 +89,42 @@
         "webpage reachability proves recipient execution",
         "marketplace data is live when stale",
         "payment success on the free first-use path"
+      ]
+    },
+    {
+      "task_id": "bounded-compute",
+      "title": "Run or recover one bounded Wasm job",
+      "kind": "native_agent_compute",
+      "when_to_use": "The user asks to run a supplied compatible Wasm program on a configured provider or inspect its existing task.",
+      "entrypoint": "https://froglet.dev/learn/agent-interoperability/",
+      "release_status": "current_source_implemented_installed_binary_support_must_be_checked",
+      "steps": [
+        "Read the interoperability guide. Check tools/list on the exact configured native binary for run_compute and get_task; do not substitute an arbitrary binary from PATH.",
+        "Use only the user-selected program, JSON input and provider. Confirm compatible Wasm v1 and explicit execution authority. Default max_price_sats to 0; a paid ceiling alone is not spending authority.",
+        "Call native run_compute with exactly one of wasm_module_hex or wasm_module_path (an absolute local regular nonsymlink compiled file), explicit input, an exact nonblank idempotency_key and the selected provider. Preserve the key, program bytes, input and provider for reconciliation; changed work requires a new key.",
+        "If a Deal reference is returned, use get_task with task_id equal to that returned deal_id to inspect existing work without resubmitting or authorizing new payment.",
+        "Report submission intent separately from admitted work. An unresolved submission_pending intent is not success and must not be automatically replaced with a new-key submission.",
+        "Report the actual result and receipt_verification, noting that signed evidence does not independently establish result correctness or usefulness."
+      ],
+      "expected_report_fields": [
+        "provider_id",
+        "deal_id",
+        "idempotency_key",
+        "status",
+        "result",
+        "result_hash",
+        "execution_limits",
+        "receipt_verification",
+        "unverified"
+      ],
+      "must_not_claim": [
+        "every installed release contains the current source actions",
+        "an arbitrary A2A agent understands the required Froglet extension",
+        "localhost free tests qualify public or real-money deployment",
+        "a stdio test proves an actual IDE or LLM host is connected",
+        "a submission_pending reference proves provider admission",
+        "exact retries guarantee universally exactly-once execution",
+        "receipt verification proves computation truth or usefulness"
       ]
     },
     {

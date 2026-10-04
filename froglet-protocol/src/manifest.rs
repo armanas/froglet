@@ -460,7 +460,9 @@ impl ServiceManifest {
                         })?;
                     "froglet.builtin.data_query.csv.v1"
                 }
-                "json" | "sqlite" if data.collection.is_some() || !data.columns.is_empty() => {
+                "json" | "sqlite" | "file"
+                    if data.collection.is_some() || !data.columns.is_empty() =>
+                {
                     return Err(ManifestError::InvalidValue {
                         field: "data.columns",
                         value: "present".to_string(),
@@ -469,11 +471,12 @@ impl ServiceManifest {
                 }
                 "json" => "froglet.builtin.data_query.json.v1",
                 "sqlite" => "froglet.builtin.data_query.sqlite.v1",
+                "file" => "froglet.builtin.file_download.v1",
                 _ => {
                     return Err(ManifestError::InvalidValue {
                         field: "data.format",
                         value: data.format.clone(),
-                        reason: "must be one of: json, csv, sqlite".to_string(),
+                        reason: "must be one of: json, csv, sqlite, file".to_string(),
                     });
                 }
             };

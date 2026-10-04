@@ -72,6 +72,9 @@ the provider with the settings loaded.
 | `FROGLET_PROVIDER_MIN_FREE_BYTES` | `0` | Reject new work when available filesystem space falls below this reserve. `0` disables this check. Check failures refuse admission. |
 | `FROGLET_PROVIDER_MAX_DATABASE_BYTES` | *(none)* | Reject new work at this high-water size for the node database plus WAL/SHM files. In-flight writes can exceed the threshold; leave headroom for recovery. |
 | `FROGLET_PROVIDER_REQUIRE_PAYMENT` | `false` | Reject free, mock-paid, and success-fee-only execution. Require a nonzero upfront fee through configured phoenixd, real LND, or live Stripe. |
+| `FROGLET_FILE_MAX_TOTAL_DOWNLOADS` | *(disabled)* | Positive persistent download reservation ceiling, at most 1,000,000. All three file limits are required to enable downloads. |
+| `FROGLET_FILE_MAX_TOTAL_BYTES` | *(disabled)* | Positive persistent file egress reservation ceiling. A GET reserves the entire snapshot; failed transfers are not refunded. |
+| `FROGLET_FILE_MAX_STORAGE_BYTES` | *(disabled)* | Positive byte ceiling for immutable `.file` snapshot packages; publication refuses insufficient space. |
 | `FROGLET_PROVIDER_MAX_TOTAL_DEALS` | *(none)* | Cumulative number of admitted deals/probes in this database. Required for every protected access mode; `0` prevents new admissions. |
 | `FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS` | *(none)* | Cumulative sum of admitted maximum runtimes in milliseconds. Required for every protected access mode; `0` prevents new execution admissions. |
 | `FROGLET_PROVIDER_MAX_TOTAL_QUOTES` | *(none)* | Cumulative quote requests and confidential-session openings, counted before wallet/resource work. Required for every protected access mode; `0` prevents new quotes/sessions. |
@@ -238,7 +241,7 @@ payee; Froglet does not route a marketplace payout or take a platform fee.
 | `FROGLET_WASM_CONCURRENCY_LIMIT` | `16` | Maximum concurrent WASM executions |
 | `FROGLET_WASM_MODULE_CACHE_CAPACITY` | `128` | Number of compiled WASM modules to cache |
 | `FROGLET_WASM_POLICY_PATH` | *(none)* | Path to a TOML WASM policy file for host capabilities (HTTP, SQLite) |
-| `FROGLET_PROCESS_CONCURRENCY` | `4` | Maximum concurrent Python/container process executions |
+| `FROGLET_PROCESS_CONCURRENCY` | `4` | Maximum concurrent process executions, including built-in selected-data services, Python and containers |
 | `FROGLET_PROCESS_OUTPUT_MAX_BYTES` | `1048576` | Maximum captured stdout/stderr bytes per process stream |
 | `FROGLET_PROCESS_MEMORY_MAX_BYTES` | `536870912` | Memory cap applied to Python rlimits and container `--memory` |
 | `FROGLET_PROCESS_PIDS_LIMIT` | `128` | PID/process cap applied to container `--pids-limit`; sandboxed inline Python is fixed to one process/thread |
@@ -468,3 +471,63 @@ approval hash.
 Provider/runtime actions require the matching URL and token-path configuration.
 The no-install public hosted proof is intentionally outside the installed MCP
 surface; use `https://froglet.dev/llms.txt` for that HTTP flow.
+
+### Download-only file publications
+
+The `froglet.builtin.file_download.v1` contract shares one immutable regular file,
+up to 8 MiB. It is disabled until all three `FROGLET_FILE_*` ceilings above are
+configured. Existing provider access, invitation, pause, storage and relay limits
+still apply. Files require zero-fee terms and settlement `none`; payments are not
+implemented for this path. Transfer counts and bytes survive restarts in the node
+SQLite database. These limits are not a cloud hosting cost cap.
+
+Prepare a private project using `froglet-node prepare-service --request FILE`.
+The request contains absolute `source` and `destination` paths, `service_id`, a
+public `summary`, and a `file` object with `filename`, optional `media_type`,
+`expires_at` (Unix seconds, within 30 days), `max_downloads`, and
+`max_transfer_bytes`. For example, the following fields select download mode
+instead of parsing the source as a dataset:
+
+```json
+{
+  "source": "/absolute/path/report.pdf",
+  "destination": "/absolute/path/share-project",
+  "service_id": "report-download",
+  "summary": "Download the approved report",
+  "file": {
+    "filename": "report.pdf",
+    "media_type": "application/pdf",
+    "expires_at": 1790611200,
+    "max_downloads": 10,
+    "max_transfer_bytes": 83886080
+  }
+}
+```
+
+Choose a fresh expiry; the timestamp above is illustrative. Preparation makes a
+private snapshot and manifest, then the existing build/plan/consent/publish flow
+applies. Review the filename, summary, byte count, fingerprint and expiry as
+public metadata. Source paths stay private. Edits to the source do not update
+published bytes. Symlinks and special files are rejected; preparation also caps
+retained file snapshots at 64 MiB per project.
+
+The share page downloads only after a click and verifies size and SHA-256 before
+offering **Save verified file**. Invitation tokens are entered separately and are
+not placed in URLs or persistent browser storage. The native equivalent is:
+
+```sh
+froglet-node download --service-url SHARE_URL --destination /absolute/new/report.pdf --json
+```
+
+Add `--access-token-file /absolute/private/invitation.token` for an invited share.
+The native command verifies signed metadata, refuses redirects and non-public
+network addresses, checks bytes, and creates a new private file without
+replacing an existing destination. First-party links use HTTPS relays; this
+command does not provide a Tor-only route or anonymous transport.
+
+`froglet-node safeguards status --json` includes file transfer reservations.
+Pause/unpublish/revoke/expiry prevent new admission. An admitted transfer may
+finish within its reserved bytes and deadline. `froglet-node safeguards
+abort-files` stops active node responses; bytes already buffered by the relay or
+received by a recipient cannot be recalled. Neither command resets allowances.
+F1 is buffered and does not support ranges, resume, uploads or folder browsing.

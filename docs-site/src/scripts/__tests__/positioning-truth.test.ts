@@ -19,6 +19,9 @@ function readRepoFile(path: string): string {
  */
 const TOP_OF_FUNNEL = [
   'docs-site/src/pages/index.astro',
+  'docs-site/src/pages/publish.astro',
+  'docs-site/src/pages/managed.astro',
+  'docs-site/src/pages/open-source.astro',
   'README.md',
 ] as const;
 
@@ -79,14 +82,24 @@ describe('top-of-funnel positioning truth', () => {
   it('renders payment-rail statuses from the maturity data, not hardcoded copy', () => {
     // Hand-maintained status labels are how the homepage ended up claiming
     // "Standardized" and "Paid staging" with nothing behind the words. The
-    // rail rows must come from src/data/maturity.ts, whose evidence paths are
+    // rail rows now live on the developer page and must come from maturity.ts; paths are
     // existence-checked in maturity-data.test.ts.
-    const home = readRepoFile('docs-site/src/pages/index.astro');
+    const home = readRepoFile('docs-site/src/pages/open-source.astro');
     expect(home).toMatch(/import \{[^}]*RAILS[^}]*\} from '\.\.\/data\/maturity'/);
     expect(home).toContain('RAILS.map');
     for (const stale of ['>Standardized<', '>Paid staging<', '>Local<']) {
       expect(home, `stale hardcoded rail status ${stale}`).not.toContain(stale);
     }
+  });
+
+  it('keeps invitation scope and unfinished contract automation explicit', () => {
+    const home = readRepoFile('docs-site/src/pages/index.astro');
+    const organizations = readRepoFile('docs-site/src/pages/managed.astro');
+    expect(home).toContain('Invitations currently cover the services on one Froglet host');
+    expect(home).toContain('cannot recall a result already delivered');
+    expect(organizations).toContain('does not currently read an arbitrary contract');
+    expect(organizations).toContain('SLA monitoring, remedies, and organization-wide policy management are future work');
+    expect(organizations).toContain('There is no managed product to sign in to today');
   });
 
   it('does not claim browser-side cryptographic verification until the page does it', () => {

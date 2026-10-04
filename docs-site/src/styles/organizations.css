@@ -1,0 +1,124 @@
+/* ============================================================
+   For organizations — decision support for a pilot.
+   Built on the story-page shell (story-pages.css); every selector is prefixed with `.story-main`
+   so it outranks the shell's element rules. Colours come from tokens.css.
+   Components: at-a-glance strip, agreement-to-controls matrix, exchange flow, pilot steps.
+   ============================================================ */
+
+.story-main .org-status-legend { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px 24px; margin: 0 0 22px; padding: 0; list-style: none; color: var(--fg2); font-size: 13.5px; line-height: 1.5; }
+.story-main .org-status-legend li { display: grid; justify-items: start; gap: 6px; }
+
+/* "Share one service." is 18 characters; the shared hero size would break it in two beside the art. */
+.story-main .story-hero--org h1 { font-size: clamp(34px, 3.5vw, 50px); }
+.story-main .story-hero--org .story-needs { margin-bottom: 8px; }
+
+/* A little less air than the shared 88px: this page carries more sections than the story pages. */
+.story-main .story-wrap--org .story-section { padding-block: 72px; }
+
+/* Maturity pills: the label always comes from the maturity data, never from page copy. */
+.story-main .org-pills { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.story-main .org-pill { display: inline-flex; align-items: center; gap: 7px; padding: 2px 10px 2px 8px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-elevated-2); color: var(--fg1); font: 500 12px/1.6 var(--font-mono); white-space: nowrap; }
+.story-main .org-pill::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--pill, var(--fg3)); }
+.story-main .org-pill[data-status='spec'] { --pill: var(--fg3); }
+.story-main .org-pill[data-status='prototype'] { --pill: var(--warn); }
+.story-main .org-pill[data-status='beta'] { --pill: var(--info); }
+.story-main .org-pill[data-status='production'] { --pill: var(--frog-400); }
+[data-theme='light'] .story-main .org-pill[data-status='prototype'] { --pill: #b45f00; }
+[data-theme='light'] .story-main .org-pill[data-status='beta'] { --pill: #1d6fd6; }
+[data-theme='light'] .story-main .org-pill[data-status='production'] { --pill: var(--frog-700); }
+.story-main .org-pill__name { color: var(--fg2); }
+
+/* ── Agreement questions → what Froglet does today ───────── */
+
+.story-main .org-matrix { overflow: hidden; background: var(--bg-elevated); border: 1px solid var(--border-strong); border-radius: 14px; }
+.story-main .org-matrix table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.story-main .org-matrix thead th { padding: 14px 26px; background: var(--bg-elevated-2); border-bottom: 1px solid var(--border-strong); color: var(--fg2); font: 500 12px/1.4 var(--font-mono); letter-spacing: .1em; text-align: left; text-transform: uppercase; }
+.story-main .org-matrix thead th:first-child { width: 22%; }
+.story-main .org-matrix tbody tr + tr > * { border-top: 1px solid var(--border-strong); }
+.story-main .org-matrix tbody :is(th, td) { padding: 20px 26px; text-align: left; vertical-align: top; }
+.story-main .org-matrix tbody th { color: var(--fg1); font-weight: 400; }
+.story-main .org-ask { display: block; color: var(--fg1); font: 600 17px/1.35 var(--font-sans); letter-spacing: -.02em; }
+.story-main .org-ask + .org-control { margin-top: 8px; }
+.story-main .org-control { display: block; color: var(--accent-code); font: 500 12px/1.5 var(--font-mono); letter-spacing: .09em; text-transform: uppercase; }
+.story-main .org-matrix td p { margin: 0 0 10px; font-size: 15px; line-height: 1.6; }
+.story-main .org-matrix td p:last-child { margin-bottom: 0; }
+.story-main .org-matrix td.org-today { border-left: 2px solid var(--frog-400); }
+.story-main .org-matrix td.org-today p { color: var(--fg1); }
+.story-main .org-matrix td.org-gap { border-left: 1px dashed var(--border-strong); }
+.story-main .org-matrix td.org-gap p { color: var(--fg2); }
+.story-main .org-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-top: 12px; font-size: 14px; }
+.story-main .org-meta a { white-space: nowrap; }
+.story-main .org-meta .org-pills { margin: 0; }
+
+/* ── One exchange, step by step ──────────────────────────── */
+
+.story-main .org-flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; margin: 0; padding: 0; list-style: none; counter-reset: org-step; }
+.story-main .org-flow__step { position: relative; min-width: 0; padding: 0 22px 0 0; }
+.story-main .org-flow__step::before { content: ''; position: absolute; top: 17px; left: 44px; right: 8px; height: 2px; background: linear-gradient(90deg, var(--border-strong), var(--border-strong)); }
+.story-main .org-flow__step:last-child::before { display: none; }
+.story-main .org-flow__n { position: relative; display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 18px; border: 2px solid var(--frog-400); border-radius: 50%; background: var(--bg); color: var(--frog-400); font: 600 15px/1 var(--font-mono); }
+[data-theme='light'] .story-main .org-flow__n { border-color: var(--frog-700); color: var(--frog-700); }
+.story-main .org-flow__actor { display: block; margin-bottom: 6px; color: var(--fg3); font: 500 12px/1.4 var(--font-mono); letter-spacing: .09em; text-transform: uppercase; }
+.story-main .org-flow__step h3 { margin: 0 0 8px; font-size: 19px; }
+.story-main .org-flow__step p { margin: 0 0 12px; font-size: 15px; line-height: 1.6; }
+.story-main .org-flow__record { display: inline-block; padding: 2px 8px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-elevated); color: var(--accent-code); font: 500 12px/1.6 var(--font-mono); overflow-wrap: anywhere; }
+
+/* ── Fit check ───────────────────────────────────────────── */
+
+.story-main .org-list { margin: 16px 0 0; padding: 0; list-style: none; }
+.story-main .org-list li { position: relative; margin: 0; padding: 10px 0 10px 30px; border-top: 1px solid var(--border-strong); color: var(--fg2); font-size: 16px; line-height: 1.6; }
+.story-main .org-list li:first-child { border-top: 0; }
+.story-main .org-list li::before { position: absolute; left: 2px; top: 10px; width: 20px; color: var(--frog-400); font: 700 16px/1.6 var(--font-mono); }
+.story-main .org-list--yes li::before { content: '✓'; }
+.story-main .org-list--no li::before { content: '–'; color: var(--warn); }
+[data-theme='light'] .story-main .org-list--yes li::before { color: var(--frog-700); }
+[data-theme='light'] .story-main .org-list--no li::before { color: #b45f00; }
+
+/* ── Pilot plan: the same table as the matrix, one row per step ─────── */
+
+.story-main .org-matrix--pilot { margin-top: 48px; }
+.story-main .org-matrix--pilot thead th:first-child { width: 22%; }
+.story-main .org-step__n { display: inline-grid; place-items: center; width: 28px; height: 28px; margin-bottom: 10px; border: 2px solid var(--frog-400); border-radius: 50%; color: var(--frog-400); font: 600 13px/1 var(--font-mono); }
+[data-theme='light'] .story-main .org-step__n { border-color: var(--frog-700); color: var(--frog-700); }
+
+/* ── Direction ───────────────────────────────────────────── */
+
+.story-main .org-why { margin-top: 22px; }
+.story-main #direction .story-art { width: auto; max-width: 100%; max-height: 400px; margin-inline: auto; object-fit: contain; }
+
+@media (max-width: 1050px) {
+	.story-main .org-status-legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.story-main .org-flow { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 40px; }
+	.story-main .org-flow__step:nth-child(3)::before { display: none; }
+}
+
+@media (max-width: 860px) {
+	/* The matrix becomes one card per question; each cell announces its own column. */
+	.story-main .org-matrix table,
+	.story-main .org-matrix tbody,
+	.story-main .org-matrix tr,
+	.story-main .org-matrix tbody :is(th, td) { display: block; width: auto; }
+	.story-main .org-matrix thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+	.story-main .org-matrix tbody tr + tr { border-top: 1px solid var(--border-strong); }
+	.story-main .org-matrix tbody tr + tr > * { border-top: 0; }
+	.story-main .org-matrix tbody th { padding: 22px 22px 6px; }
+	.story-main .org-matrix tbody td { padding: 12px 22px 12px 20px; }
+	.story-main .org-matrix tbody td:last-child { padding-bottom: 22px; }
+	.story-main .org-matrix td::before { content: attr(data-label); display: block; margin-bottom: 6px; color: var(--fg3); font: 500 11px/1.4 var(--font-mono); letter-spacing: .1em; text-transform: uppercase; }
+	.story-main .org-matrix td.org-gap { border-left-style: dashed; border-left-width: 2px; }
+}
+
+@media (max-width: 420px) {
+	/* The hero size above has a 34px floor; on the smallest phones "Share one service." must still fit on one line. */
+	.story-main .story-hero--org h1 { font-size: clamp(26px, 8.6vw, 37px); }
+}
+
+@media (max-width: 760px) {
+	.story-main .org-flow { grid-template-columns: minmax(0, 1fr); row-gap: 0; }
+	.story-main .org-flow__step { padding: 0 0 30px 56px; }
+	.story-main .org-flow__step:last-child { padding-bottom: 0; }
+	.story-main .org-flow__step::before,
+	.story-main .org-flow__step:nth-child(3)::before { display: block; top: 40px; bottom: 0; left: 17px; right: auto; width: 2px; height: auto; }
+	.story-main .org-flow__step:last-child::before { display: none; }
+	.story-main .org-flow__n { position: absolute; left: 0; top: 0; margin: 0; }
+}

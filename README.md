@@ -42,6 +42,49 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Overview
 
+**Launch preparation, 2 October 2026:** the current scope is free selected-data
+sharing and bounded Wasm through native MCP, with optional configured A2A.
+Use the [production handoff and explicit remaining gates](docs/RELEASE.md#production-launch-preparation--2-october-2026).
+Local software checks, local packages and the public documentation website do
+not qualify a new production compute deployment or an immutable release.
+
+**Development checkpoint, 1 October 2026:** work has resumed on the free native
+MCP workflow, optional configured A2A transport, and selected-data sharing with
+bounded Wasm computation. The final candidate's actual Codex CLI workflow and
+extracted demo bundle are qualified on the current Apple Silicon Mac.
+The same production inputs also passed 625 library and nine native MCP tests,
+plus the terminology workflow, in an isolated Linux arm64 development container.
+Thirteen library tests were ignored; Python OS isolation and a Linux agent host
+remain unqualified. Claude Code host qualification is blocked on sign-in.
+Selected-data/profile examples and bounded local capacity have recorded checks;
+clean machines, public compute HTTPS/capacity, and first-user value remain
+separate gates. See [current work](TODO.md#current-checkpoint--1-october-2026)
+and the [qualification evidence](docs/AGENT_INTEROPERABILITY_PLAN.md#qualification-results--1-october-2026).
+
+The public documentation website was restored on 1 October; seven checked routes
+returned HTTP 200 and matched the local build bytes. See the
+[deployment record and remaining gates](docs/RELEASE.md#effortless-publishing-qualification).
+The hosted compute trial remains unavailable. New public compute qualification
+is blocked by GCP authentication, and the source candidate remains unpublished.
+The [September pause and rollback record](docs-site/README.md#temporary-pause-2026-09-28)
+is preserved. File downloads remain locally implemented and unreleased.
+General CPU jobs, GPU rental, and new payment work are outside the resumed scope.
+
+The optional [research profile](docs/RESEARCH_PROFILE.md) makes namespace,
+version, field types, units, provenance and mapping assumptions explicit. The
+final local example retrieves a pinned public GO catalog in 100- and 40-row
+pages with verified receipts; this establishes data exchange and declared
+metadata compatibility, not scientific correctness or independent user demand.
+
+On one shared machine, eight concurrent tiny workflows using independent
+requester identities completed without errors in the measured sweep. At 16 and
+32, six selected-data jobs hit the four-process limit and returned independently
+verified failure chains. Shared requester identities still face about one
+identical requester/workload/terms Quote per second; collisions now fail before
+Deal admission and leave no pending requester submissions. These measurements
+do not establish production capacity, performance superiority or developer-time
+savings. See [the exact local qualification](docs/RELEASE.md#october-candidate-local-qualification).
+
 The current product candidate starts with **“Make this catalog usable by another
 agent.”** Codex or Claude Code can prepare selected JSON, typed CSV, or SQLite
 data, or a small Wasm function; run a local example; ask for exact publication
@@ -50,9 +93,31 @@ existing agent settings. Recipients use the same native integration without npm.
 
 See [the publishing workflow](docs-site/src/content/docs/learn/share-services.mdx)
 and [the qualification gates](docs/RELEASE.md#effortless-publishing-qualification).
-This is an uncommitted candidate: clean-machine agent tests, the real public
-relay journey, and first-time-user acceptance remain release gates. Supported
+This is a development candidate: clean-machine agent tests, the real public
+relay journey through the final candidate, and first-time-user acceptance remain
+release gates. The [first-user trial kit](docs/AGENT_PUBLISH_ACCEPTANCE.md#first-user-trial-kit--1-october-2026)
+separates setup usability from evidence of a useful job. Supported
 targets are Apple Silicon macOS and Linux x86_64/arm64. The host must stay online.
+
+The local captured-program replay now has complete evidence: Alice's retained
+81,222-byte Wasm program matched four independently frozen answers, and all
+seven admitted signed chains were verified offline. The seven include an owner
+control, selected-data retrieval, four program executions and a separate looping
+program's budget failure. Exact completed data and compute retries recovered
+cached results after Bob stopped and Alice restarted. In that historical replay,
+`get_task` returned HTTP 502 with Bob stopped. The 3 October correction now
+revalidates saved terminal task evidence locally; unsigned or unresolved tasks
+still require Bob for refresh. Current-source local regressions pass; a fresh
+optimized native candidate also passed independent verification of all seven
+chains and all six saved Alice terminal task reads after Bob stopped and Alice
+restarted. Package/release gates and website publication remain separate checks.
+
+This is deterministic replay of a program created in an earlier actual Codex
+session. That earlier fresh-session qualification remains failed because its
+complete chains were not captured and persistent Codex configuration changed.
+The replay starts no LLM, compiler or agent settings operation. See the
+[reusable runbook](examples/README.md#replay-an-already-generated-program-without-an-llm)
+and [local finalization evidence](docs/RELEASE.md#local-finalization--captured-program-replay).
 
 Froglet gives one signed economic primitive for three product shapes:
 
@@ -172,6 +237,8 @@ The public launch story still has exactly two entry points:
 
 ### 1. Try In Cloud
 
+- **Currently unavailable:** restoring the documentation site did not restore
+  or qualify the hosted compute trial. The links below describe its contract.
 - Start with
   [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx)
 - Contract reference: [docs/HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md)
@@ -383,7 +450,7 @@ froglet-node mcp
 ```
 
 This bridge needs no Node.js runtime. Its deliberately focused `froglet` tool
-supports `status`, `invoke_service`, two-step
+supports `status`, `invoke_service`, `run_compute`, `get_task`, two-step
 `marketplace_publish`, and publication status/logs/pause/resume/rollback/
 confirmed-unpublish. Durable cloud-adapter work is separately visible through
 managed-operation status, confirmed reconciliation, and confirmed compensation.
@@ -391,6 +458,15 @@ managed-operation status, confirmed reconciliation, and confirmed compensation.
 deliberately enabled the bundled demo catalog; clean installation does not.
 Publication delegates to the same canonical project
 loader, consent logic, and provider-control API as the CLI.
+
+For bounded inline Wasm computation and optional A2A transport, use a binary
+built from this checkout or a release that includes these actions. The local
+[MCP/A2A demo](examples/README.md#local-mcp-and-a2a-compute-demo) starts isolated
+Alice and Bob Nodes and exercises the real native MCP path. It uses free
+loopback computation and separate private A2A credentials; it does not configure
+a production wallet or publish a service externally. The supported profile and
+remaining release gates are in the
+[interoperability specification](docs/AGENT_INTEROPERABILITY_PLAN.md).
 
 The JavaScript MCP package is the broader compatibility and contributor
 surface for discovery, settlement, install planning, raw compute, and existing
@@ -501,6 +577,13 @@ It accepts a single artifact, a JSON array, a `/v1/feed` page, or a conformance
 fixture, from a file or stdin; `--json` emits a machine-readable report and
 `--now <unix>` turns on expiry checks. Exit codes: `0` valid, `1` invalid,
 `2` usage error.
+
+To check what a running node publishes, pipe its feed straight in. The feed is
+paged, so the verdict covers the page you fetched:
+
+```bash
+curl -s 'http://127.0.0.1:8080/v1/feed?limit=50' | cargo run -q -p froglet-verify -- -
+```
 
 The Rust facade, browser WASM build, and in-repo Rust conformance runners share
 the `froglet-protocol` implementation. [python/froglet-verify](python/froglet-verify)

@@ -22,6 +22,7 @@ pub mod attest;
 pub mod build;
 pub mod configure_agent;
 pub mod doctor;
+pub mod download;
 pub mod http_service;
 pub mod identity;
 pub mod init;

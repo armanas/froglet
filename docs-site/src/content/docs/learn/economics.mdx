@@ -12,33 +12,32 @@ Froglet separates three kinds of trust. Mixing them up is how marketplaces
 overclaim, so the protocol is explicit about which layer each guarantee
 lives in:
 
-| Guaranteed by cryptography | Operator policy (hosted marketplace) | Not guaranteed by anyone |
+| Checkable evidence | Operator policy (hosted marketplace) | Not guaranteed by the protocol |
 |---|---|---|
 | Artifact signatures (BIP340) | Listing and indexing | Execution **correctness** |
 | SHA-256 hashes and the chain | Suspension via the [arbiter](#disputes-today-the-arbiter) | Provider competence |
 | Lightning settlement state (payment preimage) | Complaint handling | Refund of the base fee on failure |
-| Identity continuity (same key = same actor) | Identity attestation (DNS / OAuth domain claims) | Future behavior of any key |
+| Signing-key continuity (not proof of the same person) | Identity attestation (DNS / OAuth domain claims) | Future behavior of any key |
 
 ### Trust signals today
 
-The live marketplace exposes a **receipt-derived trust summary** per provider:
+The marketplace API defines a **receipt-derived trust summary** per provider:
 success count, failure count, rejected/canceled count, and total settled value,
 computed from the signed receipts the indexer has verified. Two honest caveats:
 
 - **Receipt history can be self-dealt.** A provider can run deals against
-  itself to inflate counts. Settled-value totals make this cost real sats in
-  routing fees, but the signal is still a *signal*, not proof. Weigh it
-  together with attestation and account age, not alone.
-- **Domain attestation raises sybil cost.** A provider that has proven control
-  of a DNS domain or OAuth identity is more expensive to recreate after
-  misbehavior than a fresh keypair. Filter for attested providers
-  (`?attested=true`) when the stakes matter.
+  itself to inflate counts. Counts and reported settled totals do not prove
+  independent buyers or a real economic cost, especially for free or test
+  deals. Weigh history together with other evidence.
+- **Attestation supplies context, not quality assurance.** A verified domain
+  claim links a key to control of that domain. It does not prove a unique
+  person, good results, or a meaningful cost to creating another identity.
 
 ### Disputes today: the arbiter
 
-The hosted marketplace runs a complaint-and-enforcement service. Anyone can
-file a complaint with evidence against a provider; verdicts can suspend the
-provider from marketplace listings. Be clear about what this is:
+The hosted marketplace's documented arbiter accepts complaints with evidence;
+operator verdicts can suspend a provider from marketplace listings. This is an
+external service, whose availability must be checked with its operator.
 
 :::caution[Operator-adjudicated, by design — for now]
 The MVP arbiter is **operator-adjudicated**. It is not decentralized,
@@ -57,10 +56,11 @@ and they are described here as exactly that.
 
 ### What a receipt proves — and what it doesn't
 
-A signed receipt proves: the provider signed this outcome, the artifact chain
-is unbroken, the result hash is what the provider committed to, and (on the
-Lightning rail) the settlement state is cryptographically attested by the
-payment preimage.
+A valid receipt signature establishes that the provider key signed that
+reported outcome and result hash. Checking the chain also requires the linked
+artifacts, their signatures, and their hash bindings; a receipt alone is not
+the whole chain. For Lightning, a matching preimage is settlement evidence
+when checked against the deal's bound payment hash and invoice.
 
 A receipt does **not** prove the result is *correct*. Verifying execution
 correctness without re-running the work is an open research problem
@@ -75,7 +75,7 @@ re-running a sample on a second provider.
 - Keep individual deal sizes small relative to the trust evidence you have.
 - Configure your node's requester spend caps so a runaway agent can't drain a
   wallet (see [Configuration](https://github.com/armanas/froglet/blob/main/docs/CONFIGURATION.md)).
-- The **base fee is non-refundable** if execution fails — that is the
+- In the **two-leg Lightning model**, the **base fee is non-refundable** if execution fails — that is the
   provider's compensation for reserved resources. Only the success fee is
   conditional. Size base fees accordingly when you buy.
 - Lightning payments are irreversible; Stripe payments follow card-network
@@ -85,12 +85,11 @@ re-running a sample on a second provider.
 
 ## Design roadmap: staked identity
 
-The long-term design adds a fourth trust signal: **non-refundable stake**
-bound to a provider identity. A provider deposits real money into its identity
-through the marketplace; the stake is public, already-spent, and the identity's
-listing value is destroyed if the operator (or, post-MVP, an adjudication
-mechanism) upholds cheating against it. Self-dealing cannot inflate this
-signal, because only non-refundable deposits move it.
+The long-term design adds a fourth trust signal: a **non-refundable identity
+cost**, called stake in the roadmap. The intended signal is a verifiable
+payment associated with a provider key. Losing a listing could make that
+investment less useful. This is not a refundable bond, a guarantee of honest
+behavior, or a way to invalidate the provider's signed artifacts.
 
 :::note[Status: designed, not live]
 The stake schema and endpoints exist in the marketplace codebase but are
@@ -105,9 +104,9 @@ The design only works if three assumptions hold, and we state them plainly:
    delivered," receipts and deadlines make this checkable. For "provider
    returned a wrong result," it requires re-execution or verifiable compute —
    see the receipt caveat above.
-2. **Someone must adjudicate.** Stake is a bond, not a mechanism. Today the
-   adjudicator would be the marketplace operator; making adjudication
-   stake-backed and panel-based is the post-MVP path.
+2. **Someone must adjudicate.** An identity cost cannot detect cheating or
+   decide a dispute. Today the adjudicator would be the marketplace operator;
+   any panel-based mechanism is future work.
 3. **Exposure is concurrent.** A cheating provider can run many deals in
    parallel before detection propagates, so per-deal arithmetic alone
    understates risk. The relevant comparison is stake versus *total concurrent
@@ -125,7 +124,7 @@ this deal.
 <div class="plot-header">
   <div>
     <p class="plot-title">Set your risk threshold and see which deals pass</p>
-    <p class="plot-subtitle">Adjust k to see which example stake-to-exposure ratios satisfy <code>stake / exposure &gt; k</code>. Green bars pass the safety check, red bars fail.</p>
+    <p class="plot-subtitle">Adjust k to see which example stake-to-exposure ratios satisfy <code>stake / exposure &gt; k</code>. Passing this illustrative threshold does not establish safety.</p>
   </div>
 </div>
 <div class="plot-controls">
@@ -145,10 +144,12 @@ this deal.
 
 ## Design note: the deal as a game
 
-The fee structure is live today and worth understanding formally. One modeling
-assumption applies throughout: *outcomes are taken from signed receipts and
-requester acceptance*. The model prices reliability incentives; it does not
-prove correctness (see above).
+This simplified model describes **two-leg Lightning settlement**, not every
+payment rail. It assumes risk-neutral participants, a provider cost $c$ for
+every admitted attempt, and no extra transaction costs. Here, $q$ is the
+probability of an accepted successful outcome. It combines execution and
+requester acceptance; it is not an independently measured quality score.
+See [Settlement](/learn/settlement/) for implementation maturity.
 
 ### Definitions
 
@@ -180,11 +181,13 @@ base fee should stay small relative to the success fee.
 
 ### Participation constraints
 
-Requester participates if $v \geq b_s + f_s$. Provider participates if $b_s + f_s \geq c$. Gains from trade must be positive: $v - c > 0$.
+Using expected payoffs, the requester participates when $qv \geq b_s + qf_s$,
+and the provider when $b_s + qf_s \geq c$. Positive expected gains from trade
+require $qv > c$. At $q=1$, these reduce to the familiar successful-deal bounds.
 
 ### Two-leg settlement analysis
 
-Let $q \in [0, 1]$ be the probability the provider successfully executes.
+Let $q \in [0, 1]$ be the probability of the accepted success defined above.
 
 **Requester expected payoff:**
 
@@ -196,13 +199,13 @@ $$\mathbb{E}[\pi_P] = q(b_s + f_s - c) + (1-q)(b_s - c) = b_s + qf_s - c$$
 
 ### Incentive compatibility
 
-The provider is incentivized to maximize $q$:
+Holding cost and all other terms fixed, a positive success fee increases
+expected revenue as $q$ increases:
 
 $$\frac{\partial \mathbb{E}[\pi_P]}{\partial q} = f_s > 0$$
 
-The success fee acts as the provider's marginal incentive for reliability.
-Higher $f_s$ = stronger incentives for *delivering outcomes the requester
-accepts* — which is the observable proxy for quality this model can price.
+This is a marginal revenue incentive, not an equilibrium or honesty proof.
+If improving reliability also increases cost, that cost must be included.
 
 ### Interactive: provider profit vs quality
 
@@ -230,19 +233,23 @@ accepts* — which is the observable proxy for quality this model can price.
 
 <ProfitChartInit />
 
-### Optimal fee structure
+### What a fee split can guarantee
 
-With total price $\bar{p}$ fixed, the equilibrium split for a risk-neutral provider with reliability $q^*$:
+There is no unique optimal split from these assumptions alone. Breaking even
+on **every failed attempt** requires:
 
-$$b_s^* = \frac{c}{1 + q^*}, \quad f_s^* = \bar{p} - b_s^*$$
+$$b_s \geq c$$
 
-This ensures the provider breaks even on failed executions while the success fee captures the surplus.
+Breaking even **in expectation** requires $b_s + qf_s \geq c$. A smaller base
+fee shifts more failure risk to the provider. For example, with $c=2$ sat,
+$b_s=1$ sat, $f_s=4$ sat, and $q=0.5$, expected provider profit is $1$ sat,
+but each failed attempt loses $1$ sat. These are different guarantees.
 
 ## Network economics
 
 ### Marketplace viability
 
-The marketplace charges $(b_M, f_M)$ per search. With query rate $\lambda$ and $N_P$ indexed providers:
+Suppose a marketplace charges $(b_M, f_M)$ per search. With query rate $\lambda$ and $N_P$ indexed providers:
 
 $$\text{Rev}_M = \lambda \cdot (b_M + q_M f_M)$$
 
@@ -255,38 +262,41 @@ nothing — this models how an operator could sustain one.)
 
 A provider's expected value from marketplace registration:
 
-$$\Delta V_P = \lambda_M \cdot q_P \cdot (b_P + f_P - c_P) - \text{registration cost}$$
+$$\Delta V_P = \lambda_M \cdot (b_P + q_P f_P - c_P) - \text{registration cost}$$
 
-Rational when $\Delta V_P > 0$.
+Here $\lambda_M$ is the number of additional admitted deals from discovery in
+the period, with the same per-attempt cost assumption. Registration has a
+positive expected return when $\Delta V_P > 0$.
 
 ### Network effects
 
-The marketplace exhibits cross-side network effects. Steady-state:
+As a possible model of cross-side network effects, a steady state would satisfy:
 
 $$N_P^* = g_P(N_R^*), \quad N_R^* = g_R(N_P^*)$$
 
-where $g_P$ and $g_R$ are increasing. Two equilibria: trivial $(0, 0)$ and a non-trivial fixed point where both sides participate.
+Even if $g_P$ and $g_R$ are increasing, the existence and number of equilibria
+depend on their shape and boundary conditions. Growth is not guaranteed by
+the protocol.
 
 ## Welfare analysis
 
 Total welfare:
 
-$$W = \sum_{\text{deals}} (v_i - c_i) - \text{transaction costs}$$
+$$\mathbb{E}[W] = \sum_{\text{deals}} (q_i v_i - c_i) - \text{transaction costs}$$
 
-The protocol pushes $W$ up by:
+Within this model, fees are transfers between participants. Potential benefits
+must outweigh execution and transaction costs. The design aims to help through:
 
 1. **Reducing information asymmetry** — signed receipts make outcomes attributable
-2. **Reducing counterparty risk on settlement** — HTLCs bind payment to acceptance
+2. **Reducing counterparty risk on settlement** — two-leg Lightning binds the success fee to acceptance
 3. **Reducing search costs** — the marketplace aggregates information
-4. **Enabling price discovery** — competition drives prices toward cost
+4. **Enabling price discovery** — comparable terms can help buyers compare providers
 
-In the limit of a large market:
-
-$$\lim_{|\mathcal{N}| \to \infty} p_s \to c_s + \epsilon$$
+Market size alone does not imply cost-level prices or improved welfare.
 
 :::tip[The honest economic conclusion]
 Froglet makes commitments and outcomes *signed, attributable, and auditable*,
-and binds Lightning settlement to acceptance cryptographically. Execution
+and binds the two-leg Lightning success fee to acceptance cryptographically. Execution
 correctness and provider quality remain market problems — addressed today by
 receipt-derived signals, attestation, small-deal discipline, and an
 operator-adjudicated arbiter; addressed tomorrow, if the roadmap holds, by

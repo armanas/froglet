@@ -13,6 +13,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CONFORMANCE_DIR = REPO_ROOT / "conformance"
 FIXTURE_PATH = CONFORMANCE_DIR / "kernel_v1.json"
 X402_FIXTURE_PATH = CONFORMANCE_DIR / "x402_v1.json"
+# The body of `GET /v1/feed?limit=50` from a fresh dual-role node, shared with
+# the Rust verifier's tests. It lives beside those tests, not in conformance/,
+# because the conformance runner treats every fixture there as a test vector.
+NODE_FEED_PAGE_PATH = (
+    REPO_ROOT / "froglet-verify" / "tests" / "fixtures" / "node_feed_page.json"
+)
 
 _fixture_cache: dict[str, Any] | None = None
 _x402_fixture_cache: dict[str, Any] | None = None
@@ -54,6 +60,12 @@ def x402_verification_case(name: str) -> dict[str, Any]:
         if case["name"] == name:
             return copy.deepcopy(case)
     raise KeyError(f"no x402_v1.json artifact_verification_cases entry named {name!r}")
+
+
+def node_feed_page() -> dict[str, Any]:
+    """A fresh copy of the captured node feed page, safe to mutate."""
+    page: dict[str, Any] = json.loads(NODE_FEED_PAGE_PATH.read_text(encoding="utf-8"))
+    return page
 
 
 def deep_copy(value: Any) -> Any:

@@ -333,6 +333,17 @@ pub async fn dispatch_standard(request: WorkerRequest) -> Result<Value, String> 
             {
                 return Err("invalid data digest".into());
             }
+            if request.config["kind"].as_str() == Some("file") {
+                if request.input != serde_json::json!({"action":"describe"}) {
+                    return Err(
+                        "file service only supports describe; use the download endpoint for bytes"
+                            .into(),
+                    );
+                }
+                let bytes = crate::file_download::read_snapshot(&root, digest)?;
+                let (metadata, _) = froglet_protocol::file_download::decode(&bytes)?;
+                return serde_json::to_value(metadata).map_err(|e| e.to_string());
+            }
             let kind: DataQuerySourceKind = request.config["kind"]
                 .as_str()
                 .ok_or("missing data kind")?

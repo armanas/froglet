@@ -1,10 +1,11 @@
 //! Offline verifier CLI for Froglet signed-artifact chains.
 //!
 //! Reads a single artifact document, an array of documents, or an
-//! `{"artifacts": [...]}` feed page from a file or stdin; verifies every
-//! artifact's envelope and semantics; and, when the input forms exactly one
-//! chain (one descriptor, offer, quote, and deal), validates the full chain.
-//! No network, no node, no clock unless `--now` is supplied.
+//! `{"artifacts": [...]}` page from a file or stdin. That includes the page a
+//! node serves at `/v1/feed`, whose entries wrap each artifact in a `document`
+//! field. Verifies every artifact's envelope and semantics and, when the input
+//! forms exactly one chain (one descriptor, offer, quote, and deal), validates
+//! the full chain. No network, no node, no clock unless `--now` is supplied.
 //!
 //! Exit codes: 0 = nothing invalid, 1 = at least one invalid finding,
 //! 2 = usage or input error.
@@ -25,7 +26,9 @@ semantics, and (when the input holds one descriptor, offer, quote, and deal)
 the full hash-linked chain.
 
 input shapes: a single artifact object, a JSON array of artifacts, or an
-{\"artifacts\": [...]} page; {\"artifact\": {...}} wrappers are unwrapped.
+{\"artifacts\": [...]} page, including a node's /v1/feed page as served (each
+entry's signed `document` is what is verified). {\"artifact\": {...}} wrappers
+are unwrapped too.
 
   --now <unix-seconds>  evaluate expiry against this time (default: skipped)
   --chain               require chain validation (error if input is not a chain)

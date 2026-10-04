@@ -4,10 +4,11 @@ import '../styles/index-page.css';
 import SiteHeader from '../components/SiteHeader.astro';
 import SiteFooter from '../components/SiteFooter.astro';
 import AgentMeta from '../components/AgentMeta.astro';
+import FontPreload from '../components/FontPreload.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
 ---
 <html lang="en">
-<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><meta name="robots" content="noindex"/><title>Shared service · Froglet</title><ThemeProvider /><AgentMeta route="service" /></head>
+<head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><meta name="robots" content="noindex"/><title>Shared service · Froglet</title><FontPreload /><ThemeProvider /><AgentMeta route="service" /></head>
 <body>
 <SiteHeader currentPath={Astro.url.pathname} />
 <main class="froglet-home-main share-page">
