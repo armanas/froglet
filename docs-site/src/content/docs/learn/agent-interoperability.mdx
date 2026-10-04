@@ -35,7 +35,7 @@ profile does not provide that capability.
 | Alice uses Codex to retrieve rows and run an analysis | Exercised with an actual Codex host on one Mac | Codex called native MCP, used the returned rows as input, ran a local compiled Wasm file on Bob and recovered the verified result. This does not qualify every host, a clean operating system or a first-time user. |
 | Bob shares a real public terminology catalog | Exercised locally with pinned public data | Alice retrieved all 140 selected GO terms in two pages, with verified receipts. This demonstrates exchange; it does not evaluate ontology alignment or research usefulness. |
 | Alice runs the native workflow on Linux arm64 | Exercised in an isolated Docker environment | The same production source passed native MCP tests and the two-node Wasm scenario. This development build does not qualify a fresh machine, Linux agent host or public installer. |
-| Alice runs the current local demo bundle | Exercised on one Mac and in Linux arm64 Docker | The precompiled program needs no Rust, Cargo or Node. Disposable setup uses Python 3.10+; the separate TLS check also needs OpenSSL. This unpublished candidate does not qualify the public installer or a fresh operating system. |
+| Alice runs the recorded October local demo bundle | Exercised on one Mac and in Linux arm64 Docker | The precompiled program needs no Rust, Cargo or Node. Disposable setup uses Python 3.10+; the separate TLS check also needs OpenSSL. That historical package keeps its original pin; it does not qualify a fresh operating system or the new release’s installer. |
 | Alice and Bob declare different namespaces or units | Explicit preflight available | A research profile can make those differences visible before analysis. Alice must choose her own requirements; matching declarations do not prove scientific correctness. |
 | Bob admits an invited, configured Alice | Exercised over local TLS | Both the admission invitation and the A2A scope must allow her. Revocation stops new work; an ordinary admission invitation still covers the provider's services. |
 | Bob posts a link and any stranger buys immediately | Unsupported through this A2A profile | Discovery does not grant access. Bob must authorize the requester and allowed Offers; the requester must understand Froglet's extension. |
@@ -210,11 +210,11 @@ python3 examples/a2a_compute_demo.py --scenario ontology \
   --binary /absolute/froglet-node --module /absolute/ontology_audit.wasm --serve
 ```
 
-Both paths are required together. This is a source helper or locally packaged
-candidate workflow; there is no new immutable public release asserted here.
-The packaged workflow has run on the development Mac with build tools absent
-from its execution PATH. A clean OS installation and independent user trial
-remain open.
+Both paths are required together. The runner is a source helper; immutable
+`v0.4.7-beta.1` provides compatible native binaries. The historical standalone
+demo keeps its own binary and module pins. Its development-Mac run with build
+tools absent from PATH does not qualify a clean OS installation or an
+independent user trial.
 
 ## Declare research assumptions before analysis
 
@@ -408,9 +408,19 @@ settlement, public-network operation and full A2A TCK conformance are not
 qualified by this demo. Signed evidence does not independently establish
 output correctness or usefulness.
 
-The added research helpers and compute changes are a working source candidate;
-they are not yet an immutable public release. A public website deployment does
-not publish that candidate's source or release assets. Use a trusted checkout
-containing the named files, and inspect its exact binary before following the
-candidate commands. Continue with [Connect Agents](/learn/agents/)
+The compute actions are included in the immutable [v0.4.7-beta.1 prerelease](https://github.com/armanas/froglet/releases/tag/v0.4.7-beta.1).
+The downloaded Apple Silicon binary passed a separate deterministic localhost
+replay: seven verified signed chains, a signed execution-budget failure and all
+six saved terminal task reads after the provider stopped. Verify the exact
+release and manifest before using its binary; source helper examples require
+the named files from the matching trusted checkout. This proves distribution
+and that local runtime scope. A separate native-MCP run used the same released
+Mac binary and released provider image on one isolated Fly machine with a finite
+free invitation. Six signed chains covered four frozen arithmetic cases, nine
+synthetic rows/four fields and an expected fuel failure. Six direct provider
+records survived an actual restart; six saved tasks remained readable after
+Bob stopped. The test host and private state were removed. This qualifies only
+that finite free cross-host scenario. It does not newly qualify remote A2A,
+an available hosted compute service, production/load, fresh agent/OS setup,
+paid settlement or the original failed agent journey. Continue with [Connect Agents](/learn/agents/)
 or [the signed Deal flow](/learn/deal-flow/).
