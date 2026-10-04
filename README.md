@@ -64,10 +64,18 @@ and the [qualification evidence](docs/AGENT_INTEROPERABILITY_PLAN.md#qualificati
 The public documentation website was restored on 1 October; seven checked routes
 returned HTTP 200 and matched the local build bytes. See the
 [deployment record and remaining gates](docs/RELEASE.md#effortless-publishing-qualification).
-The hosted compute trial remains unavailable. New public compute qualification
-is blocked by GCP authentication, and the source candidate remains unpublished.
+The last observed hosted compute trial was unavailable; this pass has not
+requalified that deployment. Production and available hosted compute qualification
+remain open. The immutable [v0.4.7-beta.1 prerelease](https://github.com/armanas/froglet/releases/tag/v0.4.7-beta.1) is now
+published; its downloaded Apple Silicon binary passed a separate deterministic
+localhost replay. [Distribution and exact released-Mac evidence](docs/RELEASE.md#versioning)
+also record a separate native-MCP Mac-to-Fly proof: six bounded free cases,
+restart persistence and offline task recovery on one isolated test host, now
+removed. That proof does not qualify production, load, a fresh agent host,
+a clean operating system or paid operation.
 The [September pause and rollback record](docs-site/README.md#temporary-pause-2026-09-28)
-is preserved. File downloads remain locally implemented and unreleased.
+is preserved. File downloads remain experimental; Node/UI/relay qualification
+is open.
 General CPU jobs, GPU rental, and new payment work are outside the resumed scope.
 
 The optional [research profile](docs/RESEARCH_PROFILE.md) makes namespace,
@@ -93,9 +101,9 @@ existing agent settings. Recipients use the same native integration without npm.
 
 See [the publishing workflow](docs-site/src/content/docs/learn/share-services.mdx)
 and [the qualification gates](docs/RELEASE.md#effortless-publishing-qualification).
-This is a development candidate: clean-machine agent tests, the real public
-relay journey through the final candidate, and first-time-user acceptance remain
-release gates. The [first-user trial kit](docs/AGENT_PUBLISH_ACCEPTANCE.md#first-user-trial-kit--1-october-2026)
+This is a public prerelease: clean-machine agent tests, the real public
+relay journey through this profile, and first-time-user acceptance remain
+qualification gates. The [first-user trial kit](docs/AGENT_PUBLISH_ACCEPTANCE.md#first-user-trial-kit--1-october-2026)
 separates setup usability from evidence of a useful job. Supported
 targets are Apple Silicon macOS and Linux x86_64/arm64. The host must stay online.
 

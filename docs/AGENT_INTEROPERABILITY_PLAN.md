@@ -1,8 +1,14 @@
 # Agent interoperability: MCP and A2A
 
-Status: selected scope implemented, with the documented local qualification
-on 1 October 2026 and the terminal-read regression qualification on 3 October
-2026. The fresh generated-program sessions remain only partially qualified;
+Status: selected scope implemented. Immutable `v0.4.7-beta.1` distribution and
+a separate deterministic localhost replay of its downloaded Mac binary were
+verified on 4 October 2026; [the release record](RELEASE.md#versioning) names its
+exact source and binary. A separate released-Mac native-MCP-to-Fly proof passed
+six bounded free cases, restart persistence and offline task recovery; its
+isolated test host was removed. This does not newly qualify remote A2A,
+production/load, fresh agent hosts, clean OS setup or paid operation.
+The local qualification on 1 October and terminal-read
+regression qualification on 3 October below remain historical evidence. The fresh generated-program sessions remain only partially qualified;
 their exact boundary is recorded below.
 The optional A2A profile is limited to configured counterparties and the required
 Froglet extension. Production payment rails and full A2A TCK certification are

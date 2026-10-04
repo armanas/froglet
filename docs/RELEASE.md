@@ -12,15 +12,52 @@ Maintained by [Armanas Povilionis-Muradian](https://armanas.dev).
 
 ## Versioning
 
-The current immutable public beta is `v0.4.6-beta.4`, built from source revision
-`49f4753427e7b8ee8173246da53d2c592a7629b6`. Its Release Bundle asset digest and
-GitHub workflow attestation were rechecked on 3 October. The historical hosted
-`v0.1.0-beta.21` pinned the earlier beta.2 revision. The current companion workspace is
-`0.1.0-beta.23`, with public source pin
-`49f4753427e7b8ee8173246da53d2c592a7629b6`; it remains separate from the
-unpublished candidate below. Future releases require a new tag,
-a verified immutable Release Bundle, and a refreshed services source pin and
-lockfile. CI and release jobs share that pin and require locked dependencies.
+The current immutable public prerelease is [v0.4.7-beta.1](https://github.com/armanas/froglet/releases/tag/v0.4.7-beta.1),
+built from source revision `d70cb50017c7c526d1f7ad4faf278da07e8248a4`.
+On 4 October, all eight official assets, the complete Release Bundle, both
+workflow attestations and all four anonymous OCI image references were verified.
+The exact-source main CI passed all six required jobs; optional coverage was
+skipped. The release workflow also passed.
+
+The downloaded Apple Silicon binary has SHA-256
+`c1ad573f68e8a84d241f8739c3844c52770f7474affc7bbab1cb3cbf8d50ec30`.
+Its deterministic localhost replay passed independent verification of seven
+signed chains, four frozen arithmetic answers, a signed execution-budget failure
+and all six saved terminal task reads after Bob stopped and Alice restarted.
+It starts no fresh agent session or compiler. The original failed agent attempt
+and earlier failed replays remain failed and preserved.
+
+A separate 4 October cross-host qualification used that actual released Mac
+binary through native MCP and the released provider image
+`ghcr.io/armanas/froglet-provider@sha256:f6ce86bad406de2faae0175ea8ae50d76a364cd489f9f18d3f07a3a6bcb64163`
+on one isolated Fly machine with a finite free invitation. Six signed chains
+covered four frozen arithmetic cases, retrieval of nine synthetic rows/four
+fields and an expected fuel failure. All six direct provider records survived
+an actual restart, and all six saved tasks remained readable after the provider
+stopped. Independent review found no findings in this bounded scenario. The
+temporary host and private test state were removed. Remote A2A was not tested
+by this run; its configured-counterparty evidence remains local.
+
+The remote record has SHA-256
+`a19e67a833bbd94949459c25709385d7cb6a6234926a30627298cd8c9d6d07b3`.
+Its custody interruption remains recorded. Four original response contents
+were recovered under their complete pre-deletion hashes; three are explicitly
+derived recoveries from later responses and recorded listener prefixes. Later
+local controls are separately labelled and do not establish remote
+pending-admission behavior.
+
+These checks qualify distribution, the published Mac localhost replay and only
+that finite free cross-host scenario. They do not qualify an available hosted
+compute service, production operation or load, a fresh Claude/Codex journey,
+a clean operating system or Gatekeeper download, npm/MCP registry publication,
+payments or independent human usefulness. The last observed hosted deployment
+was `v0.1.0-beta.23` with public `v0.4.6-beta.4`; this pass has not upgraded it.
+Its upgrade remains a separate gate.
+Future releases need a new tag and verified immutable bundle, followed by an
+exact services pin, locked dependencies and their own deployment qualification.
+
+Dated preparation and qualification records below retain their original scope;
+they are historical evidence, not the current release-availability summary.
 
 ## Production launch preparation — 2 October 2026
 

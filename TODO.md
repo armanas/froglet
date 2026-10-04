@@ -5,7 +5,24 @@ design stubs. It is not the kernel specification. `docs/KERNEL.md` remains the
 authoritative source for canonical artifact payloads, hashing, signing bytes,
 state transitions, and settlement bindings.
 
-## Current checkpoint — 1 October 2026
+## Current checkpoint — 4 October 2026
+
+The immutable [v0.4.7-beta.1 prerelease](https://github.com/armanas/froglet/releases/tag/v0.4.7-beta.1) is published from
+`d70cb50017c7c526d1f7ad4faf278da07e8248a4`. Its asset digests, Release Bundle,
+attestations and OCI distribution are verified. The downloaded Mac binary
+`c1ad573f68e8a84d241f8739c3844c52770f7474affc7bbab1cb3cbf8d50ec30`
+passed a separate deterministic localhost replay: seven verified chains and
+six saved offline terminal task reads. See [the exact release scope](docs/RELEASE.md#versioning).
+A separate native-MCP Mac-to-Fly proof passed six bounded free cases, provider
+restart persistence and offline task recovery on one isolated host, now removed.
+Available hosted/production compute, load, fresh agent/OS qualification,
+npm/MCP registry publication, paid operation and independent human trials remain open. The old agent/replay
+failures and original demo pins below are historical evidence, not promoted
+by this pass.
+
+<a id="current-checkpoint--1-october-2026"></a>
+
+## Historical checkpoint — 1 October 2026
 
 Launch preparation on 2 October keeps this free scope and its qualification
 limits. The [production handoff](docs/RELEASE.md#production-launch-preparation--2-october-2026)

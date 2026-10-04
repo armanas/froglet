@@ -1,6 +1,15 @@
 # Agent publishing qualification and first-user trial kit
 
-**Current status, 1 October 2026:** work has resumed on free native MCP
+**Current status, 4 October 2026:** immutable `v0.4.7-beta.1` distribution and a
+separate deterministic replay of its downloaded Mac binary are verified. See
+[the released artifact and exact scope](RELEASE.md#versioning). A separate native-MCP
+Mac-to-Fly qualification passed six bounded free cases, provider restart
+persistence and offline task recovery; the isolated host was then removed.
+Available hosted/production compute, load, fresh agent/OS qualification and the
+independent owner/recipient usefulness trials remain open; publication does not make the original failed agent attempt
+pass. The earlier observations below retain their dates and scope.
+
+**Historical checkpoint, 1 October 2026:** work has resumed on free native MCP
 selected-data sharing and bounded Wasm execution, with optional A2A between
 configured counterparties. The [two-node examples](AGENT_INTEROPERABILITY_PLAN.md#terminology-workflow-qualification---1-october-2026)
 have recorded local qualification. The final candidate also passed actual Codex
