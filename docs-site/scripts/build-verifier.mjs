@@ -1,9 +1,9 @@
 import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { bindgen, repo, run, site, target } from './wasm-tools.mjs';
+import { bindgen, buildWasm, repo, run, site, target } from './wasm-tools.mjs';
 
 const generator = bindgen();
-run('cargo', ['build', '--locked', '--release', '-p', 'froglet-verify', '--lib', '--target', 'wasm32-unknown-unknown', '--target-dir', target]);
+buildWasm(['--locked', '--release', '-p', 'froglet-verify', '--lib', '--target', 'wasm32-unknown-unknown', '--target-dir', target]);
 const output = resolve(site, 'src/generated/verifier');
 mkdirSync(output, { recursive: true });
 run(generator, [resolve(target, 'wasm32-unknown-unknown/release/froglet_verify.wasm'), '--target', 'web', '--out-dir', output]);
