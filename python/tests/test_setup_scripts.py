@@ -993,6 +993,614 @@ class NativeLifecycleTests(unittest.TestCase):
         self.assertNotIn("sk_test_native", native_environment)
         self.assertNotIn("sk_test_native", launcher)
 
+    def test_existing_provider_safeguards_survive_activation_upgrade_and_rollback(self):
+        initial = self._activate()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        safeguards = {
+            "FROGLET_PROVIDER_ACCESS_MODE": "private",
+            "FROGLET_PROVIDER_REQUIRE_PAYMENT": "false",
+            "FROGLET_PROVIDER_MAX_TOTAL_DEALS": "0",
+            "FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS": "40000",
+            "FROGLET_PROVIDER_MAX_TOTAL_QUOTES": "20",
+            "FROGLET_PROVIDER_MIN_FREE_BYTES": "1048576",
+            "FROGLET_PROVIDER_MAX_DATABASE_BYTES": "4194304",
+            "FROGLET_FILE_MAX_TOTAL_DOWNLOADS": "10",
+            "FROGLET_FILE_MAX_TOTAL_BYTES": "2097152",
+            "FROGLET_FILE_MAX_STORAGE_BYTES": "1048576",
+            "FROGLET_EXECUTION_TIMEOUT_SECS": "3",
+            "FROGLET_PROCESS_CONCURRENCY": "1",
+            "FROGLET_PROCESS_OUTPUT_MAX_BYTES": "8192",
+            "FROGLET_PROCESS_MEMORY_MAX_BYTES": "16777216",
+            "FROGLET_PROCESS_PIDS_LIMIT": "16",
+            "FROGLET_PROCESS_CPU_LIMIT": "0.5",
+            "FROGLET_WASM_CONCURRENCY_LIMIT": "2",
+            "FROGLET_WASM_POLICY_PATH": str(self.root / "owner's policy.json"),
+            "FROGLET_A2A_CONFIG_PATH": str(self.root / "access.json"),
+            "FROGLET_PRICE_EXEC_WASM": "1000",
+            "FROGLET_PUBLIC_REQUEST_QUOTA": "12",
+            "FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS": "false",
+            "FROGLET_IDENTITY_AUTO_GENERATE": "false",
+            "FROGLET_HOST_READABLE_CONTROL_TOKEN": "false",
+            "FROGLET_DB_PATH": str(self.root / "existing ledger.db"),
+        }
+        environment = self.bootstrap / "native.env"
+        lines = environment.read_text().splitlines()
+        lines = [line for line in lines if line.split("=", 1)[0] not in safeguards]
+        lines.extend(f'{name}="{value}"' for name, value in safeguards.items())
+        environment.write_text("\n".join(lines) + "\n")
+        self._write_upgrade_installer()
+        binary, manifest = self._release_fixture("v1.1.0")
+        steps = (
+            ("activate", "--binary", str(binary), "--release", "v1.1.0", "--manifest", str(manifest)),
+            ("upgrade", "v2.0.0"),
+            ("rollback",),
+        )
+        for args in steps:
+            with self.subTest(operation=args[0]):
+                result = self._run(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                persisted = environment.read_text()
+                for name, value in safeguards.items():
+                    self.assertIn(f'{name}="{value}"\n', persisted)
+        # The rolled-back fixture captures what a clean service launch receives.
+        capture = self.root / "preserved-launch.env"
+        launched = subprocess.run(
+            [str(self.bootstrap / "run-native.sh")],
+            env=self._environment(FROGLET_TEST_CAPTURE_ENV=str(capture)),
+            text=True, capture_output=True,
+        )
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        received = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+        for name, value in safeguards.items():
+            self.assertEqual(received[name], value)
+
+    def test_native_environment_injection_fails_before_release_switch(self):
+        initial = self._activate()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        marker = self.root / "native-env-must-not-execute"
+        environment = self.bootstrap / "native.env"
+        with environment.open("a") as output:
+            output.write(f'FROGLET_PROVIDER_ACCESS_MODE="$(touch {marker})"\n')
+        before = environment.read_bytes()
+        current = (self.bootstrap / "current").readlink()
+        calls = self.systemctl_log.read_bytes()
+        self._write_upgrade_installer()
+        result = self._run("upgrade", "v2.0.0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native environment", result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertEqual((self.bootstrap / "current").readlink(), current)
+        self.assertEqual(environment.read_bytes(), before)
+        self.assertEqual(self.systemctl_log.read_bytes(), calls)
+        self.assertFalse((self.bootstrap / "releases/v2.0.0").exists())
+
+    def _run_scoped_native(self, *args: str, **overrides: str):
+        environment = self._environment()
+        for name in tuple(environment):
+            if name.startswith("FROGLET_"):
+                del environment[name]
+        environment.update({
+            "FROGLET_SERVICE_MANAGER": "systemd",
+            "FROGLET_BOOTSTRAP_DIR": str(self.bootstrap),
+            "FROGLET_DATA_DIR": str(self.data),
+            "FROGLET_HEALTH_ATTEMPTS": "1",
+            "FROGLET_HEALTH_INTERVAL_SECS": "0",
+        })
+        environment.update(overrides)
+        return subprocess.run(
+            ["bash", str(FROGLET_SERVICE), *args], cwd=self.root,
+            env=environment, text=True, capture_output=True, timeout=15,
+        )
+
+    def _activate_scoped_native(self, release: str = "v1.0.0"):
+        binary, manifest = self._release_fixture(release)
+        return self._run_scoped_native(
+            "activate", "--binary", str(binary), "--release", release,
+            "--manifest", str(manifest),
+        )
+
+    @staticmethod
+    def _native_literal(value: str) -> str:
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        escaped = escaped.replace("$", "\\$").replace("`", "\\`")
+        return f'"{escaped}"'
+
+    def _replace_native_settings(self, settings: dict[str, str]) -> None:
+        environment = self.bootstrap / "native.env"
+        lines = [line for line in environment.read_text().splitlines()
+                 if line.split("=", 1)[0] not in settings]
+        lines.extend(f"{name}={self._native_literal(value)}"
+                     for name, value in settings.items())
+        environment.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        environment.chmod(0o600)
+
+    def _native_lifecycle_snapshot(self):
+        paths = [self.bootstrap / name for name in (
+            "native.env", "payment.env", "current", "previous", "current-release",
+            "release-manifest.json", "run-native.sh", "local-proof.json",
+        )]
+        paths.extend((
+            self.bin_dir / "froglet-node", self.systemctl_log, self.launchctl_log,
+            self.home / ".config/systemd/user/froglet.service",
+            self.home / "Library/LaunchAgents/dev.froglet.node.plist",
+        ))
+        paths.extend(self.data.rglob("*"))
+        snapshot = {}
+        for path in paths:
+            if not path.exists() and not path.is_symlink():
+                snapshot[str(path)] = None
+                continue
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode):
+                value = ("symlink", str(path.readlink()))
+            elif stat.S_ISREG(metadata.st_mode):
+                value = ("file", path.read_bytes())
+            else:
+                value = ("special",)
+            snapshot[str(path)] = (metadata.st_mode, metadata.st_uid, value)
+        releases = self.bootstrap / "releases"
+        snapshot["release_names"] = sorted(path.name for path in releases.iterdir()) if releases.exists() else []
+        return snapshot
+
+    def test_native_preservation_only_overrides_reject_new_or_changed_settings(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        self._replace_native_settings({"FROGLET_PROCESS_CONCURRENCY": "1"})
+        binary, manifest = self._release_fixture("v1.1.0")
+        args = ("activate", "--binary", str(binary), "--release", "v1.1.0",
+                "--manifest", str(manifest))
+        for label, overrides in (
+            ("new", {"FROGLET_PROVIDER_MIN_FREE_BYTES": "1048576"}),
+            ("changed", {"FROGLET_PROCESS_CONCURRENCY": "2"}),
+        ):
+            with self.subTest(override=label):
+                before = self._native_lifecycle_snapshot()
+                result = self._run_scoped_native(*args, **overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("requires an approved installed configuration", result.stderr)
+                self.assertEqual(self._native_lifecycle_snapshot(), before)
+        matching = self._run_scoped_native(*args, FROGLET_PROCESS_CONCURRENCY="1")
+        self.assertEqual(matching.returncode, 0, matching.stderr)
+        self.assertIn('FROGLET_PROCESS_CONCURRENCY="1"\n',
+                      (self.bootstrap / "native.env").read_text())
+        self.assertNotIn("FROGLET_PROVIDER_MIN_FREE_BYTES=", (self.bootstrap / "native.env").read_text())
+
+    def test_native_literal_paths_round_trip_without_shell_execution(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        dollar_marker = self.root / "dollar-must-not-execute"
+        backtick_marker = self.root / "backtick-must-not-execute"
+        literal = (f'{self.root}/policy "quoted" \\ path $HOME '
+                   f'$(touch {dollar_marker}) `touch {backtick_marker}`')
+        environment = self.bootstrap / "native.env"
+        with environment.open("a", encoding="utf-8") as output:
+            output.write(f"FROGLET_WASM_POLICY_PATH='{literal}'\n")
+        for release in ("v1.1.0", "v1.2.0"):
+            with self.subTest(release=release):
+                result = self._activate_scoped_native(release)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                canonical = environment.read_text()
+                self.assertIn(f"FROGLET_WASM_POLICY_PATH={self._native_literal(literal)}\n", canonical)
+                self.assertFalse(dollar_marker.exists())
+                self.assertFalse(backtick_marker.exists())
+                capture = self.root / f"literal-{release}.env"
+                launched = subprocess.run(
+                    [str(self.bootstrap / "run-native.sh")], cwd=self.root,
+                    env={"PATH": f"{self.stub_dir}:/usr/bin:/bin", "HOME": str(self.home),
+                         "FROGLET_TEST_CAPTURE_ENV": str(capture)},
+                    text=True, capture_output=True, timeout=15,
+                )
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                received = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+                self.assertEqual(received["FROGLET_WASM_POLICY_PATH"], literal)
+                self.assertFalse(dollar_marker.exists())
+                self.assertFalse(backtick_marker.exists())
+
+    def test_failed_upgrade_preserves_installed_safeguards_and_requester_zero(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        safeguards = {
+            "FROGLET_PROVIDER_ACCESS_MODE": "private",
+            "FROGLET_PROVIDER_REQUIRE_PAYMENT": "false",
+            "FROGLET_PROVIDER_MAX_TOTAL_DEALS": "0",
+            "FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS": "0",
+            "FROGLET_PROVIDER_MAX_TOTAL_QUOTES": "0",
+            "FROGLET_PROVIDER_MIN_FREE_BYTES": "1048576",
+            "FROGLET_FILE_MAX_TOTAL_DOWNLOADS": "2",
+            "FROGLET_FILE_MAX_TOTAL_BYTES": "1024",
+            "FROGLET_FILE_MAX_STORAGE_BYTES": "2048",
+            "FROGLET_PROCESS_CONCURRENCY": "1",
+            "FROGLET_REQUESTER_SPEND_BUDGET_MSAT": "0",
+            "FROGLET_REQUESTER_MAX_DEAL_MSAT": "0",
+        }
+        self._replace_native_settings(safeguards)
+        state = self.data / "accounting-fixture.json"
+        state.write_text('{"reserved_deals":1,"reserved_runtime_ms":250,"issued_quotes":2}\n')
+        original_state = state.read_bytes()
+        original_payment = (self.bootstrap / "payment.env").read_bytes()
+        original_target = (self.bootstrap / "current").readlink()
+        self._write_upgrade_installer()
+        result = self._run_scoped_native("upgrade", "v2.0.0", FAKE_UPGRADE_PROOF="fail")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("rolled back to v1.0.0", result.stderr)
+        self.assertEqual((self.bootstrap / "current").readlink(), original_target)
+        self.assertEqual((self.bootstrap / "current-release").read_text().strip(), "v1.0.0")
+        self.assertFalse((self.bootstrap / "releases/v2.0.0").exists())
+        self.assertEqual(state.read_bytes(), original_state)
+        self.assertEqual((self.bootstrap / "payment.env").read_bytes(), original_payment)
+        capture = self.root / "failed-upgrade-launch.env"
+        launched = subprocess.run(
+            [str(self.bootstrap / "run-native.sh")], cwd=self.root,
+            env={"PATH": f"{self.stub_dir}:/usr/bin:/bin", "HOME": str(self.home),
+                 "FROGLET_TEST_CAPTURE_ENV": str(capture)},
+            text=True, capture_output=True, timeout=15,
+        )
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        received = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+        for name, value in safeguards.items():
+            self.assertEqual(received[name], value)
+
+    def test_native_environment_invalid_records_fail_without_lifecycle_changes(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        self._write_upgrade_installer()
+        environment = self.bootstrap / "native.env"
+        baseline = environment.read_bytes()
+        (self.data / "state-fixture").write_bytes(b"state must stay unchanged\n")
+        limits = (b'FROGLET_PROVIDER_MAX_TOTAL_DEALS="0"\n'
+                  b'FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS="0"\n'
+                  b'FROGLET_PROVIDER_MAX_TOTAL_QUOTES="0"\n')
+        cases = (
+            ("malformed", b"not-an-assignment\n", "malformed line"),
+            ("unknown", b'FROGLET_UNSUPPORTED_SAFETY_LIMIT="1"\n', "unsupported variable"),
+            ("duplicate_same", b'FROGLET_NETWORK_MODE="clearnet"\n', "repeats variable"),
+            ("duplicate_changed", b'FROGLET_NETWORK_MODE="dual"\n', "repeats variable"),
+            ("nul_comment", b"# ignored comment\x00payload\n", "NUL bytes"),
+            ("control", b'FROGLET_WASM_POLICY_PATH="bad\tpath"\n', "control characters"),
+            ("unterminated", b'FROGLET_WASM_POLICY_PATH="missing\n', "unterminated value"),
+            ("quoted_escape", b'FROGLET_WASM_POLICY_PATH="bad\\qpath"\n', "unsupported quoted escape"),
+            ("partial_file", b'FROGLET_FILE_MAX_TOTAL_DOWNLOADS="1"\n', "configured together"),
+            ("zero_file", b'FROGLET_FILE_MAX_TOTAL_DOWNLOADS="0"\n', "file limits must be positive"),
+            ("file_download_overflow", b'FROGLET_FILE_MAX_TOTAL_DOWNLOADS="1000001"\n', "integer range"),
+            ("sqlite_overflow", b'FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS="9223372036854775808"\n', "integer range"),
+            ("u64_overflow", b'FROGLET_PROVIDER_MIN_FREE_BYTES="18446744073709551616"\n', "integer range"),
+            ("empty_uint", b'FROGLET_PROVIDER_MAX_DATABASE_BYTES=""\n', "unsigned integer"),
+            ("protected_missing_limits", b'FROGLET_PROVIDER_ACCESS_MODE="private"\n', "protected provider requires"),
+            ("paid_without_payment", limits + b'FROGLET_PROVIDER_ACCESS_MODE="paid"\n', "paid access requires payment"),
+            ("trial_requires_payment", limits + b'FROGLET_PROVIDER_ACCESS_MODE="trial"\nFROGLET_PROVIDER_REQUIRE_PAYMENT="true"\n', "trial access cannot require payment"),
+            ("bad_boolean", b'FROGLET_PROVIDER_REQUIRE_PAYMENT="maybe"\n', "must be a boolean"),
+            ("wasm_zero", b'FROGLET_WASM_CONCURRENCY_LIMIT="0"\n', "Wasm concurrency must be positive"),
+            ("cpu_nan", b'FROGLET_PROCESS_CPU_LIMIT="NaN"\n', "positive finite decimal"),
+            ("different_data_root", f'FROGLET_DATA_ROOT="{self.root / "other-state"}"\n'.encode(), "must match lifecycle"),
+        )
+        for label, suffix, error in cases:
+            with self.subTest(record=label):
+                environment.write_bytes(baseline + suffix)
+                before = self._native_lifecycle_snapshot()
+                result = self._run_scoped_native("upgrade", "v2.0.0")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(error, result.stderr)
+                self.assertEqual(self._native_lifecycle_snapshot(), before)
+        with self.subTest(record="unsupported_role"):
+            environment.write_bytes(baseline.replace(b'FROGLET_NODE_ROLE="dual"', b'FROGLET_NODE_ROLE="provider"'))
+            before = self._native_lifecycle_snapshot()
+            result = self._run_scoped_native("upgrade", "v2.0.0")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("requires FROGLET_NODE_ROLE=dual", result.stderr)
+            self.assertEqual(self._native_lifecycle_snapshot(), before)
+
+    def test_native_environment_unsafe_files_fail_before_service_changes(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        environment = self.bootstrap / "native.env"
+        baseline = environment.read_bytes()
+        target = self.root / "native-target.env"
+        target.write_bytes(baseline)
+        target.chmod(0o600)
+        for label in ("symlink", "dangling_symlink", "fifo", "group_readable", "world_readable"):
+            with self.subTest(file=label):
+                environment.unlink()
+                if label == "symlink":
+                    environment.symlink_to(target)
+                elif label == "dangling_symlink":
+                    environment.symlink_to(self.root / "missing.env")
+                elif label == "fifo":
+                    os.mkfifo(environment, 0o600)
+                else:
+                    environment.write_bytes(baseline)
+                    environment.chmod(0o640 if label == "group_readable" else 0o644)
+                before = self._native_lifecycle_snapshot()
+                result = self._run_scoped_native("restart")
+                self.assertNotEqual(result.returncode, 0)
+                expected = "regular non-symlink file" if label in ("symlink", "dangling_symlink", "fifo") else "readable by group or other users"
+                self.assertIn(expected, result.stderr)
+                self.assertEqual(self._native_lifecycle_snapshot(), before)
+                self.assertEqual(target.read_bytes(), baseline)
+        environment.unlink()
+        environment.write_bytes(baseline)
+        environment.chmod(0o600)
+
+    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0,
+                         "creating a genuinely unowned temporary fixture requires root")
+    def test_native_environment_wrong_owner_fails_before_service_changes(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        environment = self.bootstrap / "native.env"
+        os.chown(environment, 1, -1)
+        before = self._native_lifecycle_snapshot()
+        result = self._run_scoped_native("restart")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("must be owned by the current user", result.stderr)
+        self.assertEqual(self._native_lifecycle_snapshot(), before)
+
+    def test_installed_native_environment_requires_file_and_data_directory_record(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        self._write_upgrade_installer()
+        environment = self.bootstrap / "native.env"
+        baseline = environment.read_bytes()
+        for label in ("missing_file", "missing_data_directory"):
+            with self.subTest(configuration=label):
+                if label == "missing_file":
+                    environment.unlink()
+                    expected = "installed native environment is missing"
+                else:
+                    environment.write_bytes(b"\n".join(
+                        line for line in baseline.splitlines()
+                        if not line.startswith(b"FROGLET_DATA_DIR=")
+                    ) + b"\n")
+                    environment.chmod(0o600)
+                    expected = "missing FROGLET_DATA_DIR"
+                before = self._native_lifecycle_snapshot()
+                result = self._run_scoped_native("upgrade", "v2.0.0")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertEqual(self._native_lifecycle_snapshot(), before)
+
+    def test_absent_installed_native_defaults_stay_absent_through_activation(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        absent = {"FROGLET_NODE_ROLE", "FROGLET_IDENTITY_AUTO_GENERATE",
+                  "FROGLET_HOST_READABLE_CONTROL_TOKEN"}
+        environment = self.bootstrap / "native.env"
+        environment.write_text("\n".join(
+            line for line in environment.read_text().splitlines()
+            if line.split("=", 1)[0] not in absent
+        ) + "\n", encoding="utf-8")
+        for release in ("v1.1.0", "v1.2.0"):
+            with self.subTest(release=release):
+                result = self._activate_scoped_native(release)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                persisted = environment.read_text()
+                for name in absent:
+                    self.assertNotIn(name + "=", persisted)
+                capture = self.root / f"absent-{release}.env"
+                launched = subprocess.run(
+                    [str(self.bootstrap / "run-native.sh")], cwd=self.root,
+                    env={"PATH": f"{self.stub_dir}:/usr/bin:/bin", "HOME": str(self.home),
+                         "FROGLET_TEST_CAPTURE_ENV": str(capture)},
+                    text=True, capture_output=True, timeout=15,
+                )
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                received = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+                for name in absent:
+                    self.assertNotIn(name, received)
+
+    def _assert_native_lock_drift_refused(self, *, reentrant=False,
+                                         initially_absent=False, metadata_only=False):
+        environment = self.bootstrap / "native.env"
+        if not initially_absent:
+            initial = self._activate_scoped_native()
+            self.assertEqual(initial.returncode, 0, initial.stderr)
+            self._replace_native_settings({
+                "FROGLET_PROVIDER_ACCESS_MODE": "private",
+                "FROGLET_PROVIDER_MAX_TOTAL_DEALS": "10",
+                "FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS": "1000",
+                "FROGLET_PROVIDER_MAX_TOTAL_QUOTES": "10",
+            })
+            original = environment.read_bytes()
+            replacement = original.replace(b'FROGLET_PROVIDER_MAX_TOTAL_DEALS="10"',
+                                           b'FROGLET_PROVIDER_MAX_TOTAL_DEALS="0"')
+        else:
+            settings = {
+                "FROGLET_DATA_DIR": str(self.data),
+                "FROGLET_PUBLIC_BASE_URL": "http://127.0.0.1:8080",
+                "FROGLET_LISTEN_ADDR": "127.0.0.1:8080",
+                "FROGLET_RUNTIME_LISTEN_ADDR": "127.0.0.1:8081",
+                "FROGLET_RUNTIME_PROVIDER_BASE_URL": "http://127.0.0.1:8080",
+                "FROGLET_PROVIDER_ACCESS_MODE": "private",
+                "FROGLET_PROVIDER_MAX_TOTAL_DEALS": "0",
+                "FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS": "0",
+                "FROGLET_PROVIDER_MAX_TOTAL_QUOTES": "0",
+            }
+            replacement = "".join(f"{name}={self._native_literal(value)}\n"
+                                  for name, value in settings.items()).encode()
+        state = self.data / "lock-race-state-fixture"
+        state.write_bytes(b"existing accounting fixture must remain unchanged\n")
+        binary, manifest = self._release_fixture("v1.1.0")
+        lock = Path(str(self.bootstrap) + ".lifecycle.lock")
+        token = "fixture-reentrant-lock"
+        if reentrant:
+            lock.mkdir(mode=0o700)
+            owner = lock / "owner"
+            owner.write_text(f"pid={os.getpid()}\nstarted=1\ntoken={token}\n")
+            owner.chmod(0o600)
+            owner_before = owner.read_bytes()
+        replacement_file = self.root / "lock-replacement.env"
+        replacement_file.write_bytes(replacement)
+        replacement_file.chmod(0o600)
+        marker = self.root / "lock-drift-injected"
+        if metadata_only:
+            mutation = f"chmod 0644 {shlex.quote(str(environment))}"
+        else:
+            mutation = (f"umask 077\n"
+                        f"cat {shlex.quote(str(replacement_file))} > {shlex.quote(str(environment))}")
+        # Intercept the exact lock attempt after configuration parsing, without
+        # scheduling-dependent concurrent processes or changes to script source.
+        self._write_stub("mkdir", f"""#!/bin/sh
+            /bin/mkdir "$@"
+            result=$?
+            if [ "$#" -eq 1 ] && [ "$1" = {shlex.quote(str(lock))} ] && [ ! -e {shlex.quote(str(marker))} ]; then
+              {mutation}
+              : > {shlex.quote(str(marker))}
+            fi
+            exit "$result"
+            """)
+        before = self._native_lifecycle_snapshot()
+        overrides = {"FROGLET_LIFECYCLE_LOCK_TOKEN": token} if reentrant else {}
+        result = self._run_scoped_native(
+            "activate", "--binary", str(binary), "--release", "v1.1.0",
+            "--manifest", str(manifest), **overrides,
+        )
+        self.assertTrue(marker.exists(), "controlled lock drift was not injected")
+        actual_limits = [line for line in environment.read_text().splitlines()
+                         if line.startswith("FROGLET_PROVIDER_MAX_TOTAL_DEALS=")]
+        self.assertNotEqual(result.returncode, 0,
+                            f"lifecycle accepted configuration drift; installed limit: {actual_limits!r}")
+        self.assertIn("native environment", result.stderr)
+        expected = before.copy()
+        if initially_absent:
+            expected[str(environment)] = (stat.S_IFREG | 0o600, os.getuid(), ("file", replacement))
+        elif metadata_only:
+            expected[str(environment)] = (stat.S_IFREG | 0o644, before[str(environment)][1], ("file", original))
+        else:
+            expected[str(environment)] = (before[str(environment)][0], before[str(environment)][1], ("file", replacement))
+        self.assertEqual(self._native_lifecycle_snapshot(), expected)
+        if reentrant:
+            self.assertTrue(lock.is_dir())
+            self.assertEqual((lock / "owner").read_bytes(), owner_before)
+        else:
+            self.assertFalse(lock.exists(), "a rejected acquired operation retained its lock")
+
+    def test_native_config_drift_after_lock_acquisition_is_refused(self):
+        self._assert_native_lock_drift_refused()
+
+    def test_native_config_drift_at_reentrant_lock_is_refused(self):
+        self._assert_native_lock_drift_refused(reentrant=True)
+
+    def test_first_install_native_environment_appearance_at_lock_is_refused(self):
+        self._assert_native_lock_drift_refused(initially_absent=True)
+
+    def test_native_environment_permission_drift_at_lock_is_refused(self):
+        self._assert_native_lock_drift_refused(metadata_only=True)
+
+    def test_native_environment_drift_during_validation_is_refused_before_lock(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        self._replace_native_settings({
+            "FROGLET_PROVIDER_MAX_TOTAL_DEALS": "10",
+        })
+        environment = self.bootstrap / "native.env"
+        original = environment.read_bytes()
+        replacement = original.replace(b'FROGLET_PROVIDER_MAX_TOTAL_DEALS="10"',
+                                       b'FROGLET_PROVIDER_MAX_TOTAL_DEALS="0"')
+        replacement_file = self.root / "validation-replacement.env"
+        replacement_file.write_bytes(replacement)
+        replacement_file.chmod(0o600)
+        marker = self.root / "validation-drift-injected"
+        lock_attempt = self.root / "validation-lock-attempted"
+        lock = Path(str(self.bootstrap) + ".lifecycle.lock")
+        self._write_stub("tr", f"""#!/bin/sh
+            if [ ! -e {shlex.quote(str(marker))} ]; then
+              cat {shlex.quote(str(replacement_file))} > {shlex.quote(str(environment))}
+              : > {shlex.quote(str(marker))}
+            fi
+            exec /usr/bin/tr "$@"
+            """)
+        # The NUL check's two pipeline processes must both see the replacement;
+        # otherwise its existing byte comparison rejects before the race under test.
+        self._write_stub("cmp", f"""#!/bin/sh
+            if [ "$#" -eq 3 ] && [ "$1" = -s ] && [ "$2" = {shlex.quote(str(environment))} ] && [ "$3" = - ]; then
+              attempts=0
+              while [ ! -e {shlex.quote(str(marker))} ] && [ "$attempts" -lt 100 ]; do
+                /bin/sleep 0.01
+                attempts=$((attempts + 1))
+              done
+            fi
+            exec /usr/bin/cmp "$@"
+            """)
+        self._write_stub("mkdir", f"""#!/bin/sh
+            if [ "$#" -eq 1 ] && [ "$1" = {shlex.quote(str(lock))} ]; then
+              : > {shlex.quote(str(lock_attempt))}
+            fi
+            exec /bin/mkdir "$@"
+            """)
+        binary, manifest = self._release_fixture("v1.1.0")
+        before = self._native_lifecycle_snapshot()
+        result = self._run_scoped_native(
+            "activate", "--binary", str(binary), "--release", "v1.1.0",
+            "--manifest", str(manifest),
+        )
+        self.assertTrue(marker.exists(), "controlled validation drift was not injected")
+        self.assertNotEqual(result.returncode, 0, "lifecycle accepted configuration changed during validation")
+        self.assertIn("native environment", result.stderr)
+        expected = before.copy()
+        expected[str(environment)] = (before[str(environment)][0], before[str(environment)][1],
+                                      ("file", replacement))
+        self.assertEqual(self._native_lifecycle_snapshot(), expected)
+        self.assertFalse(lock_attempt.exists(), "configuration drift was detected only after trying the lock")
+        self.assertFalse(lock.exists())
+
+    def test_native_listener_invalid_and_overflow_ports_fail_without_lifecycle_changes(self):
+        initial = self._activate_scoped_native()
+        self.assertEqual(initial.returncode, 0, initial.stderr)
+        (self.data / "port-state-fixture").write_bytes(b"port validation must not alter state\n")
+        binary, manifest = self._release_fixture("v1.1.0")
+        ports = (str((1 << 64) + 8080), "65536", "0", "00065536",
+                 "0000", "000" + str((1 << 64) + 8080))
+        for name in ("FROGLET_PROVIDER_URL", "FROGLET_RUNTIME_URL"):
+            for port in ports:
+                with self.subTest(endpoint=name, port=port):
+                    before = self._native_lifecycle_snapshot()
+                    result = self._run_scoped_native(
+                        "activate", "--binary", str(binary), "--release", "v1.1.0",
+                        "--manifest", str(manifest), **{name: f"http://127.0.0.1:{port}"},
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"{name} has an invalid port", result.stderr)
+                    self.assertEqual(self._native_lifecycle_snapshot(), before)
+
+    def test_native_listener_boundary_and_padded_ports_persist_and_reach_launcher(self):
+        for release, provider_port, runtime_port in (
+            ("v1.0.0", "1", "65535"),
+            ("v1.1.0", "65535", "1"),
+            ("v1.2.0", "0008080", "0008081"),
+        ):
+            with self.subTest(provider_port=provider_port, runtime_port=runtime_port):
+                binary, manifest = self._release_fixture(release)
+                provider = f"http://127.0.0.1:{provider_port}"
+                runtime = f"http://127.0.0.1:{runtime_port}"
+                result = self._run_scoped_native(
+                    "activate", "--binary", str(binary), "--release", release,
+                    "--manifest", str(manifest), FROGLET_PROVIDER_URL=provider,
+                    FROGLET_RUNTIME_URL=runtime,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = {
+                    "FROGLET_LISTEN_ADDR": f"127.0.0.1:{provider_port}",
+                    "FROGLET_RUNTIME_LISTEN_ADDR": f"127.0.0.1:{runtime_port}",
+                    "FROGLET_PUBLIC_BASE_URL": provider,
+                    "FROGLET_RUNTIME_PROVIDER_BASE_URL": provider,
+                }
+                environment = self.bootstrap / "native.env"
+                persisted = environment.read_text()
+                for name, value in expected.items():
+                    self.assertIn(f'{name}="{value}"\n', persisted)
+                restarted = self._run_scoped_native("restart")
+                self.assertEqual(restarted.returncode, 0, restarted.stderr)
+                self.assertEqual(environment.read_text(), persisted)
+                capture = self.root / f"ports-{release}.env"
+                launched = subprocess.run(
+                    [str(self.bootstrap / "run-native.sh")], cwd=self.root,
+                    env={"PATH": f"{self.stub_dir}:/usr/bin:/bin", "HOME": str(self.home),
+                         "FROGLET_TEST_CAPTURE_ENV": str(capture)},
+                    text=True, capture_output=True, timeout=15,
+                )
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                received = dict(line.split("=", 1) for line in capture.read_text().splitlines())
+                for name, value in expected.items():
+                    self.assertEqual(received[name], value)
+
     def test_payment_environment_rejects_shell_injection_before_activation(self):
         marker = self.root / "must-not-exist"
         payment = self._payment_environment(

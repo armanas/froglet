@@ -45,6 +45,33 @@ LIFECYCLE_LOCK_DIR="$BOOTSTRAP_DIR.lifecycle.lock"
 LIFECYCLE_LOCK_TOKEN="${FROGLET_LIFECYCLE_LOCK_TOKEN:-service-$$}"
 lifecycle_lock_owned=false
 
+# Preserve installed safeguards only. Bootstrap approval does not bind new
+# ambient overrides for these settings, so lifecycle never adds them that way.
+PRESERVED_NATIVE_NAMES=(
+  FROGLET_NODE_ROLE FROGLET_IDENTITY_AUTO_GENERATE FROGLET_HOST_READABLE_CONTROL_TOKEN
+  FROGLET_DATA_ROOT FROGLET_DB_PATH FROGLET_PROVIDER_ARTIFACT_ROOT FROGLET_HTTP_CA_CERT_PATH
+  FROGLET_TOR_BINARY FROGLET_TOR_BACKEND_LISTEN_ADDR FROGLET_TOR_STARTUP_TIMEOUT_SECS
+  FROGLET_PROVIDER_ACCESS_MODE FROGLET_PROVIDER_REQUIRE_PAYMENT FROGLET_PROVIDER_INVITE_HASH_FILE
+  FROGLET_PROVIDER_MIN_FREE_BYTES FROGLET_PROVIDER_MAX_DATABASE_BYTES
+  FROGLET_PROVIDER_MAX_TOTAL_DEALS FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS FROGLET_PROVIDER_MAX_TOTAL_QUOTES
+  FROGLET_FILE_MAX_TOTAL_DOWNLOADS FROGLET_FILE_MAX_TOTAL_BYTES FROGLET_FILE_MAX_STORAGE_BYTES
+  FROGLET_EXECUTION_TIMEOUT_SECS FROGLET_PROCESS_CONCURRENCY FROGLET_PROCESS_OUTPUT_MAX_BYTES
+  FROGLET_PROCESS_MEMORY_MAX_BYTES FROGLET_PROCESS_PIDS_LIMIT FROGLET_PROCESS_CPU_LIMIT
+  FROGLET_WASM_POLICY_PATH FROGLET_WASM_CONCURRENCY_LIMIT FROGLET_WASM_MODULE_CACHE_CAPACITY
+  FROGLET_WASM_SQLITE_MAX_CELL_BYTES FROGLET_CONFIDENTIAL_POLICY_PATH FROGLET_CONFIDENTIAL_SESSION_TTL_SECS
+  FROGLET_A2A_CONFIG_PATH FROGLET_PRICE_EVENTS_QUERY FROGLET_PRICE_EXEC_WASM
+  FROGLET_PUBLIC_REQUEST_QUOTA FROGLET_HOSTED_TRIAL_DEAL_QUOTA_PER_IDENTITY
+  FROGLET_HOSTED_TRIAL_SESSION_QUOTA_PER_IDENTITY FROGLET_EVENT_PUBLISH_QUOTA_PER_IDENTITY
+  FROGLET_QUOTE_QUOTA_PER_IDENTITY FROGLET_CONFIDENTIAL_SESSION_QUOTA_PER_IDENTITY
+  FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS FROGLET_HOSTED_TRIAL_DEAL_QUOTA_WINDOW_SECS
+  FROGLET_PUBLIC_WRITE_QUOTA_WINDOW_SECS FROGLET_RUNTIME_ALLOW_NON_LOOPBACK
+  FROGLET_MARKETPLACE_ALLOW_LOCAL FROGLET_PUBLISH_DEMO_SERVICES
+)
+NATIVE_NAMES=()
+NATIVE_VALUES=()
+NATIVE_ENV_PRESENT=false
+NATIVE_ENV_FINGERPRINT=missing
+
 log() {
   printf '[froglet-service] %s\n' "$*" >&2
 }
@@ -261,13 +288,21 @@ validate_http_url() {
 }
 
 native_listener() {
-  local name="$1" value="$2" port host
+  local name="$1" value="$2" port host numeric_port
   case "$value" in
     http://127.0.0.1:*) host=127.0.0.1; port="${value#http://127.0.0.1:}" ;;
     http://\[::1\]:*) host='[::1]'; port="${value#http://\[::1\]:}" ;;
     *) fail "$name must be an http:// loopback origin with an explicit port" ;;
   esac
-  [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port > 0 && 10#$port < 65536 )) || fail "$name has an invalid port"
+  [[ "$port" =~ ^[0-9]+$ ]] || fail "$name has an invalid port"
+  numeric_port="$port"
+  while [[ ${#numeric_port} -gt 1 && "${numeric_port:0:1}" == 0 ]]; do
+    numeric_port="${numeric_port:1}"
+  done
+  # Bound significant digits before Bash arithmetic, which can wrap u64-sized
+  # input into an apparently valid port. Preserve the approved literal below.
+  [[ ${#numeric_port} -le 5 ]] && (( 10#$numeric_port > 0 && 10#$numeric_port < 65536 )) || \
+    fail "$name has an invalid port"
   printf '%s:%s' "$host" "$port"
 }
 
@@ -276,22 +311,203 @@ require_msat_or_empty() {
   local value="$2"
   case "$value" in
     '') ;;
-    0|0[0-9]*|*[!0-9]*) fail "$name must be a positive integer (millisatoshis)" ;;
+    0) ;; # Explicit zero is a restrictive requester spend policy.
+    0[0-9]*|*[!0-9]*) fail "$name must be a non-negative integer (millisatoshis)" ;;
   esac
 }
 
+native_variable_allowed() {
+  local name="$1" candidate
+  case "$name" in
+    FROGLET_RELEASE|FROGLET_DATA_DIR|FROGLET_NETWORK_MODE|FROGLET_MARKETPLACE_URL|\
+    FROGLET_REQUESTER_SPEND_BUDGET_MSAT|FROGLET_REQUESTER_MAX_DEAL_MSAT|\
+    FROGLET_LISTEN_ADDR|FROGLET_RUNTIME_LISTEN_ADDR|FROGLET_PUBLIC_BASE_URL|\
+    FROGLET_RUNTIME_PROVIDER_BASE_URL|FROGLET_RELAY_URL|FROGLET_RELAY_PUBLIC_SUFFIX) return 0 ;;
+  esac
+  for candidate in "${PRESERVED_NATIVE_NAMES[@]}"; do
+    [[ "$candidate" != "$name" ]] || return 0
+  done
+  return 1
+}
+
+# Decode literal assignments without sourcing/eval: generated double quotes,
+# single-quoted literals, or escaped simple words. Raw shell expansion fails.
+decode_native_value() {
+  local value="$1" character next quoted=false
+  REPLY=""
+  case "$value" in
+    \"*)
+      [[ ${#value} -ge 2 && "${value: -1}" == '"' ]] || fail "native environment has an unterminated value"
+      value="${value:1:${#value}-2}"
+      quoted=true ;;
+    \') fail "native environment has an unterminated value" ;;
+    \'*)
+      [[ "${value: -1}" == "'" ]] || fail "native environment has an unterminated value"
+      value="${value:1:${#value}-2}"
+      [[ "$value" != *"'"* ]] || fail "native environment has a malformed quoted value"
+      REPLY="$value"
+      return 0 ;;
+    '') fail "native environment has an empty unquoted value" ;;
+  esac
+  while [[ -n "$value" ]]; do
+    character="${value:0:1}"
+    value="${value:1}"
+    if [[ "$character" == '\' ]]; then
+      [[ -n "$value" ]] || fail "native environment has an incomplete escape"
+      next="${value:0:1}"
+      if [[ "$quoted" == true ]]; then
+        case "$next" in '\'|'"'|'$'|'`') ;; *) fail "native environment has an unsupported quoted escape" ;; esac
+      fi
+      REPLY+="$next"
+      value="${value:1}"
+    elif [[ "$quoted" == true ]]; then
+      case "$character" in '"'|'$'|'`') fail "native environment contains shell expansion or malformed quotes" ;; esac
+      REPLY+="$character"
+    else
+      case "$character" in
+        [A-Za-z0-9_.,/:@%+=-]|'#') REPLY+="$character" ;;
+        *) fail "native environment contains an unescaped shell metacharacter" ;;
+      esac
+    fi
+  done
+}
+
+require_native_uint() {
+  local name="$1" value="$2" maximum="${3:-18446744073709551615}"
+  [[ "$value" =~ ^[0-9]+$ ]] || fail "native environment $name must be an unsigned integer"
+  while [[ ${#value} -gt 1 && "${value:0:1}" == 0 ]]; do value="${value:1}"; done
+  [[ ${#value} -lt ${#maximum} || ( ${#value} -eq ${#maximum} && ! "$value" > "$maximum" ) ]] || \
+    fail "native environment $name exceeds its integer range"
+}
+
+validate_native_setting() {
+  local name="$1" value="$2"
+  case "$name" in
+    FROGLET_RELEASE) validate_release "$value" ;;
+    FROGLET_DATA_DIR) require_absolute_path "$name" "$value" ;;
+    FROGLET_NETWORK_MODE)
+      case "$value" in clearnet|tor|dual) ;; *) fail "native environment has an invalid network mode" ;; esac ;;
+    FROGLET_MARKETPLACE_URL) validate_http_url "$name" "$value" ;;
+    FROGLET_REQUESTER_SPEND_BUDGET_MSAT|FROGLET_REQUESTER_MAX_DEAL_MSAT)
+      require_msat_or_empty "$name" "$value"
+      [[ -z "$value" ]] || require_native_uint "$name" "$value" ;;
+    FROGLET_PUBLIC_BASE_URL|FROGLET_RUNTIME_PROVIDER_BASE_URL)
+      native_listener "$name" "$value" >/dev/null ;;
+    FROGLET_LISTEN_ADDR|FROGLET_RUNTIME_LISTEN_ADDR)
+      native_listener "$name" "http://$value" >/dev/null ;;
+    FROGLET_RELAY_URL) validate_relay_url "$value" ;;
+    FROGLET_RELAY_PUBLIC_SUFFIX) validate_relay_public_suffix "$value" ;;
+    FROGLET_NODE_ROLE) [[ "$value" == dual ]] || fail "native lifecycle requires FROGLET_NODE_ROLE=dual" ;;
+    FROGLET_PROVIDER_ACCESS_MODE)
+      case "$value" in open|private|invite|trial|paid) ;; *) fail "native environment has an invalid provider access mode" ;; esac ;;
+    FROGLET_IDENTITY_AUTO_GENERATE|FROGLET_HOST_READABLE_CONTROL_TOKEN|FROGLET_PROVIDER_REQUIRE_PAYMENT|\
+    FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS|FROGLET_RUNTIME_ALLOW_NON_LOOPBACK|\
+    FROGLET_MARKETPLACE_ALLOW_LOCAL|FROGLET_PUBLISH_DEMO_SERVICES)
+      case "$value" in 0|1|[Tt][Rr][Uu][Ee]|[Ff][Aa][Ll][Ss][Ee]|[Yy][Ee][Ss]|[Nn][Oo]|[Oo][Nn]|[Oo][Ff][Ff]) ;;
+        *) fail "native environment $name must be a boolean" ;; esac ;;
+    FROGLET_PROVIDER_MAX_TOTAL_DEALS|FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS|FROGLET_PROVIDER_MAX_TOTAL_QUOTES|\
+    FROGLET_FILE_MAX_TOTAL_DOWNLOADS|FROGLET_FILE_MAX_TOTAL_BYTES|FROGLET_FILE_MAX_STORAGE_BYTES)
+      require_native_uint "$name" "$value" 9223372036854775807
+      case "$name" in FROGLET_FILE_*) [[ "$value" =~ [1-9] ]] || fail "native environment file limits must be positive" ;; esac
+      [[ "$name" != FROGLET_FILE_MAX_TOTAL_DOWNLOADS ]] || require_native_uint "$name" "$value" 1000000 ;;
+    FROGLET_PROCESS_CPU_LIMIT)
+      [[ ${#value} -le 32 && "$value" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ && "$value" =~ [1-9] ]] || \
+        fail "native environment CPU limit must be a positive finite decimal" ;;
+    FROGLET_*_PATH|FROGLET_PROVIDER_INVITE_HASH_FILE|FROGLET_DATA_ROOT|FROGLET_PROVIDER_ARTIFACT_ROOT|\
+    FROGLET_TOR_BINARY|FROGLET_TOR_BACKEND_LISTEN_ADDR)
+      [[ -n "$value" ]] || fail "native environment $name must not be empty" ;;
+    FROGLET_PROVIDER_MIN_FREE_BYTES|FROGLET_PROVIDER_MAX_DATABASE_BYTES|FROGLET_EXECUTION_TIMEOUT_SECS|\
+    FROGLET_PROCESS_*|FROGLET_WASM_*|FROGLET_CONFIDENTIAL_SESSION_TTL_SECS|FROGLET_PRICE_*|\
+    FROGLET_PUBLIC_REQUEST_QUOTA|FROGLET_*_QUOTA_PER_IDENTITY|FROGLET_*_QUOTA_WINDOW_SECS|\
+    FROGLET_TOR_STARTUP_TIMEOUT_SECS)
+      require_native_uint "$name" "$value"
+      [[ "$name" != FROGLET_WASM_CONCURRENCY_LIMIT || "$value" =~ [1-9] ]] || fail "native environment Wasm concurrency must be positive" ;;
+  esac
+}
+
+validate_native_environment_file() {
+  local permissions
+  [[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || fail "native environment must be a regular non-symlink file"
+  [[ -O "$ENV_FILE" ]] || fail "native environment must be owned by the current user"
+  permissions="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || true)"
+  if [[ ! "$permissions" =~ ^[0-7]{3,4}$ ]]; then
+    permissions="$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null)" || fail "could not inspect native environment permissions"
+  fi
+  [[ "$permissions" =~ ^[0-7]{3,4}$ ]] || fail "could not validate native environment permissions"
+  (( (8#$permissions & 077) == 0 )) || fail "native environment must not be readable by group or other users"
+}
+
+native_environment_fingerprint() {
+  local digest
+  if [[ ! -e "$ENV_FILE" && ! -L "$ENV_FILE" ]]; then
+    printf missing
+    return 0
+  fi
+  validate_native_environment_file
+  if command -v sha256sum >/dev/null 2>&1; then
+    digest="$(sha256sum <"$ENV_FILE")" || fail "could not fingerprint native environment"
+  elif command -v shasum >/dev/null 2>&1; then
+    digest="$(shasum -a 256 <"$ENV_FILE")" || fail "could not fingerprint native environment"
+  else
+    fail "a SHA-256 tool is required to validate native environment changes"
+  fi
+  digest="${digest%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || fail "invalid native environment fingerprint"
+  printf '%s' "$digest"
+}
+
+require_unchanged_native_environment() {
+  [[ "$(native_environment_fingerprint)" == "$NATIVE_ENV_FINGERPRINT" ]] || \
+    fail "native environment changed after validation; retry with the current installed settings"
+}
+
+read_native_environment() {
+  local line name value seen_names=$'\n'
+  NATIVE_ENV_FINGERPRINT="$(native_environment_fingerprint)"
+  if [[ "$NATIVE_ENV_FINGERPRINT" == missing ]]; then
+    [[ ! -e "$CURRENT_LINK" && ! -L "$CURRENT_LINK" ]] || fail "installed native environment is missing; recover it before changing releases"
+    return 0
+  fi
+  NATIVE_ENV_PRESENT=true
+  LC_ALL=C tr -d '\000' <"$ENV_FILE" | cmp -s "$ENV_FILE" - || fail "native environment contains NUL bytes"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    reject_control_chars "native environment line" "$line"
+    [[ "$line" == *=* ]] || fail "native environment contains a malformed line"
+    name="${line%%=*}"
+    [[ "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]] || fail "native environment contains an invalid variable name"
+    native_variable_allowed "$name" || fail "native environment contains unsupported variable: $name"
+    [[ "$seen_names" != *$'\n'"$name"$'\n'* ]] || fail "native environment repeats variable: $name"
+    seen_names+="$name"$'\n'
+    decode_native_value "${line#*=}"
+    value="$REPLY"
+    validate_native_setting "$name" "$value"
+    NATIVE_NAMES+=("$name")
+    NATIVE_VALUES+=("$value")
+  done <"$ENV_FILE"
+  # The parsed values must belong to the exact bytes fingerprinted above.
+  require_unchanged_native_environment
+  if [[ -e "$CURRENT_LINK" || -L "$CURRENT_LINK" ]]; then
+    for name in FROGLET_DATA_DIR FROGLET_PUBLIC_BASE_URL FROGLET_LISTEN_ADDR FROGLET_RUNTIME_LISTEN_ADDR FROGLET_RUNTIME_PROVIDER_BASE_URL; do
+      persisted_value "$name" >/dev/null || fail "installed native environment is missing $name"
+    done
+  fi
+}
+
 persisted_value() {
-  local name="$1"
-  local line
-  line="$(grep -E -m 1 "^${name}=\"[^\"\\\\]*\"$" "$ENV_FILE" || true)"
-  [[ -n "$line" ]] || return 1
-  line="${line#*=\"}"
-  printf '%s' "${line%\"}"
+  local name="$1" index
+  for ((index=0; index<${#NATIVE_NAMES[@]}; index++)); do
+    if [[ "${NATIVE_NAMES[index]}" == "$name" ]]; then
+      printf '%s' "${NATIVE_VALUES[index]}"
+      return 0
+    fi
+  done
+  return 1
 }
 
 load_persisted_config() {
-  local value
-  [[ -f "$ENV_FILE" ]] || return 0
+  local value name
+  read_native_environment
   if [[ -z "$DATA_DIR_WAS_SET" ]] && value="$(persisted_value FROGLET_DATA_DIR)"; then
     DATA_DIR="$value"
   fi
@@ -323,6 +539,62 @@ load_persisted_config() {
       RELAY_PUBLIC_SUFFIX="$value"
     fi
   fi
+  for name in "${PRESERVED_NATIVE_NAMES[@]}"; do
+    if [[ -n "${!name+x}" ]]; then
+      value="$(persisted_value "$name")" && [[ "${!name}" == "$value" ]] || \
+        fail "$name requires an approved installed configuration; lifecycle only preserves existing native settings"
+    fi
+  done
+  if value="$(persisted_value FROGLET_DATA_ROOT)"; then
+    [[ "$value" == "$DATA_DIR" ]] || fail "native FROGLET_DATA_ROOT must match lifecycle FROGLET_DATA_DIR"
+  fi
+  require_absolute_path FROGLET_DATA_DIR "$DATA_DIR"
+  native_listener FROGLET_PROVIDER_URL "$PROVIDER_URL" >/dev/null
+  native_listener FROGLET_RUNTIME_URL "$RUNTIME_URL" >/dev/null
+  if value="$(persisted_value FROGLET_PUBLIC_BASE_URL)"; then
+    local stored_listener stored_provider
+    if stored_listener="$(persisted_value FROGLET_LISTEN_ADDR)"; then
+      [[ "$stored_listener" == "$(native_listener FROGLET_PUBLIC_BASE_URL "$value")" ]] || \
+        fail "native provider listener differs from the lifecycle provider URL"
+    fi
+    if stored_provider="$(persisted_value FROGLET_RUNTIME_PROVIDER_BASE_URL)"; then
+      [[ "$stored_provider" == "$value" ]] || fail "native runtime provider differs from the lifecycle provider URL"
+    fi
+  fi
+  validate_preserved_native_policy
+}
+
+validate_preserved_native_policy() {
+  local mode payment name file_count=0
+  mode="$(persisted_value FROGLET_PROVIDER_ACCESS_MODE || printf open)"
+  payment="$(persisted_value FROGLET_PROVIDER_REQUIRE_PAYMENT || printf false)"
+  case "$payment" in 1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) payment=true ;; *) payment=false ;; esac
+  if [[ "$mode" != open || "$payment" == true ]]; then
+    for name in FROGLET_PROVIDER_MAX_TOTAL_DEALS FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS FROGLET_PROVIDER_MAX_TOTAL_QUOTES; do
+      persisted_value "$name" >/dev/null || fail "native protected provider requires $name"
+    done
+  fi
+  [[ "$mode" != paid || "$payment" == true ]] || fail "native paid access requires payment"
+  [[ "$mode" != trial || "$payment" == false ]] || fail "native trial access cannot require payment"
+  for name in FROGLET_FILE_MAX_TOTAL_DOWNLOADS FROGLET_FILE_MAX_TOTAL_BYTES FROGLET_FILE_MAX_STORAGE_BYTES; do
+    if persisted_value "$name" >/dev/null; then file_count=$((file_count+1)); fi
+  done
+  [[ "$file_count" == 0 || "$file_count" == 3 ]] || fail "native file limits must be configured together"
+}
+
+write_preserved_native_settings() {
+  local name value
+  for name in "${PRESERVED_NATIVE_NAMES[@]}"; do
+    if ! value="$(persisted_value "$name")"; then
+      [[ "$NATIVE_ENV_PRESENT" == false ]] || continue
+      case "$name" in
+        FROGLET_NODE_ROLE) value=dual ;;
+        FROGLET_IDENTITY_AUTO_GENERATE|FROGLET_HOST_READABLE_CONTROL_TOKEN) value=true ;;
+        *) continue ;;
+      esac
+    fi
+    printf '%s=%s\n' "$name" "$(shell_quote_value "$name" "$value")"
+  done
 }
 
 payment_variable_allowed() {
@@ -538,9 +810,7 @@ write_environment() {
   umask 077
   {
     printf 'FROGLET_RELEASE=%s\n' "$(shell_quote_value FROGLET_RELEASE "$release")"
-    printf 'FROGLET_NODE_ROLE=%s\n' '"dual"'
     printf 'FROGLET_DATA_DIR=%s\n' "$(shell_quote_value FROGLET_DATA_DIR "$DATA_DIR")"
-    printf 'FROGLET_IDENTITY_AUTO_GENERATE=%s\n' '"true"'
     printf 'FROGLET_NETWORK_MODE=%s\n' "$(shell_quote_value FROGLET_NETWORK_MODE "$NETWORK_MODE")"
     printf 'FROGLET_MARKETPLACE_URL=%s\n' "$(shell_quote_value FROGLET_MARKETPLACE_URL "$MARKETPLACE_URL")"
     printf 'FROGLET_REQUESTER_SPEND_BUDGET_MSAT=%s\n' "$(shell_quote_value FROGLET_REQUESTER_SPEND_BUDGET_MSAT "$SPEND_BUDGET_MSAT")"
@@ -551,7 +821,7 @@ write_environment() {
     printf 'FROGLET_RUNTIME_PROVIDER_BASE_URL=%s\n' "$(shell_quote_value FROGLET_RUNTIME_PROVIDER_BASE_URL "$PROVIDER_URL")"
     printf 'FROGLET_RELAY_URL=%s\n' "$(shell_quote_value FROGLET_RELAY_URL "$RELAY_URL")"
     printf 'FROGLET_RELAY_PUBLIC_SUFFIX=%s\n' "$(shell_quote_value FROGLET_RELAY_PUBLIC_SUFFIX "$RELAY_PUBLIC_SUFFIX")"
-    printf 'FROGLET_HOST_READABLE_CONTROL_TOKEN=%s\n' '"true"'
+    write_preserved_native_settings
   } >"$temporary"
   chmod 0600 "$temporary"
   mv -f "$temporary" "$ENV_FILE"
@@ -917,7 +1187,12 @@ fi
 validate_lifecycle_settings
 
 case "$command" in
-  activate|restart|upgrade|rollback|uninstall) acquire_lifecycle_lock ;;
+  activate|restart|upgrade|rollback|uninstall)
+    acquire_lifecycle_lock
+    # Another lifecycle operation may have completed between the validated
+    # read and lock acquisition. Reentrant bootstrap locks need this too.
+    require_unchanged_native_environment
+    ;;
 esac
 
 case "$command" in

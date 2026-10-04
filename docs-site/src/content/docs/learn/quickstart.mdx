@@ -171,12 +171,23 @@ After that approval gate, the bootstrap:
 - starts one dual-role node through launchd or user systemd with persistent
   identity/state under `~/.froglet/data`
 - writes Claude Code or Codex configuration for the dependency-free native MCP bridge
-- proves provider/runtime health and native MCP attachment without seeding a
-  service, then publishes/invokes a read-only JSON fixture and
+- proves provider/runtime health and runs a native MCP command-line probe,
+  then publishes/invokes a read-only JSON fixture and
   confirmed-unpublishes it before reporting success
 - prints JSON with the exact release and source revision, install mode, state
   path, MCP config, lifecycle command, proof booleans, data-proof path, and next
   native actions
+
+The command-line probe does not prove that your agent host has connected.
+After installation, ask your agent to call Froglet's `status` action and check
+the reported release and endpoints. Restart or reconnect the host's MCP server
+after an upgrade so it loads the new bridge executable.
+
+For an existing node with custom provider limits, do not use the published
+`v0.4.7-beta.1` lifecycle helper to upgrade or roll back: it can drop those
+settings. The preservation correction is currently source-only. See the
+[native upgrade notes](https://github.com/armanas/froglet/blob/main/docs/DOCKER.md#no-clone-user-stack)
+for the operator-managed update boundary.
 
 It does **not** publish public services, register with the marketplace, or turn
 on paid rails. A digest-pinned OCI image is only the fallback when native
