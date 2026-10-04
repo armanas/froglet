@@ -1224,6 +1224,19 @@ exec /bin/cp "$@"
         self.assertNotEqual(fixture.read_bytes(), fixture_original)
         self.assertEqual(fixture_copy_count.read_text().strip(), "2")
         self.assertFalse(staged_fixture.with_name("froglet-service.toml").exists())
+        # Installed safeguards are part of the existing-installation approval,
+        # even though bootstrap does not offer ambient overrides for them.
+        installed_safeguards = (
+            'FROGLET_PROVIDER_ACCESS_MODE="private"\n'
+            'FROGLET_PROVIDER_MAX_TOTAL_DEALS="10"\n'
+            'FROGLET_PROVIDER_MAX_TOTAL_RUNTIME_MS="20000"\n'
+            'FROGLET_PROVIDER_MAX_TOTAL_QUOTES="20"\n'
+            'FROGLET_FILE_MAX_TOTAL_DOWNLOADS="5"\n'
+            'FROGLET_FILE_MAX_TOTAL_BYTES="1048576"\n'
+            'FROGLET_FILE_MAX_STORAGE_BYTES="524288"\n'
+        )
+        with (bootstrap_dir / "native.env").open("a", encoding="utf-8") as output:
+            output.write(installed_safeguards)
         native_environment = (bootstrap_dir / "native.env").read_text(encoding="utf-8")
         self.assertIn(
             'FROGLET_RELAY_URL="wss://relay.example/v1/tunnel"',
@@ -1269,6 +1282,31 @@ exec /bin/cp "$@"
         new_manager_calls = systemctl_log.read_text()[len(before_manager):]
         self.assertNotIn("restart", new_manager_calls)
         self.assertNotIn("disable", new_manager_calls)
+
+        # Changing one installed limit invalidates a previously approved
+        # reconnect and cannot change the service or agent configuration.
+        drift_plan = subprocess.run(
+            ["sh", str(AGENT_BOOTSTRAP_SCRIPT), "plan"],
+            cwd=self.root, env=env, text=True, capture_output=True,
+        )
+        self.assertEqual(drift_plan.returncode, 0, drift_plan.stderr)
+        approval = json.loads(drift_plan.stdout)["install_approval_hash"]
+        drifted_environment = native_environment.replace(
+            'FROGLET_PROVIDER_MAX_TOTAL_QUOTES="20"',
+            'FROGLET_PROVIDER_MAX_TOTAL_QUOTES="21"',
+        )
+        (bootstrap_dir / "native.env").write_text(drifted_environment)
+        before_drift_manager = systemctl_log.read_bytes()
+        rejected = subprocess.run(
+            ["sh", str(AGENT_BOOTSTRAP_SCRIPT), "execute", approval],
+            cwd=self.root, env=env, text=True, capture_output=True,
+        )
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("approval hash does not match", rejected.stderr)
+        self.assertEqual((bootstrap_dir / "native.env").read_text(), drifted_environment)
+        self.assertEqual(config_path.read_bytes(), before_config)
+        self.assertEqual(systemctl_log.read_bytes(), before_drift_manager)
+        (bootstrap_dir / "native.env").write_text(native_environment)
 
         # A configuration failure on reconnect must never uninstall the
         # working node or erase the malformed file the user needs to repair.

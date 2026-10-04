@@ -58,6 +58,22 @@ Upgrade activation replaces a versioned symlink atomically, preserves the data
 directory and identity, and rolls back when health or local proof fails.
 Uninstall preserves persistent state unless `--purge-data` is explicit.
 
+For installations with custom provider safeguards in `native.env`, the published
+`v0.4.7-beta.1` lifecycle helper can drop those settings during activation,
+upgrade, or rollback. The source correction preserves supported installed
+settings, rejects new or changed ambient safety overrides, and refuses
+configuration drift after acquiring the lifecycle lock. That correction is not
+yet in an immutable release. Do not use the published helper to update a
+customized provider; keep admission held for an operator-reviewed update that
+preserves identity, current databases, limits, and usage.
+
+A health-based executable rollback does not prove that older code can read a
+database changed by a newer release. Test compatibility on restored current-state
+copies before an operational rollback; do not restore an older usage ledger to
+replenish capacity. A lifecycle command-line MCP probe also does not establish
+an agent-host connection. Reconnect the host's MCP server after an upgrade and
+make an actual tool call from that host.
+
 ## Source-Checkout Development Stack
 
 ```bash
