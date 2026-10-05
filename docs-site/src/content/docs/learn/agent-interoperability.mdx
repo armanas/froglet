@@ -93,10 +93,16 @@ not confidential computation or automatic enforcement of a data-use agreement.
 
 ## Source and release support
 
-This guide describes the current source implementation. Support in an installed
-release depends on its exact binary: inspect the native MCP `tools/list` response
-for `run_compute` and `get_task`, and check that release's notes. Source tests do
-not establish that an older immutable release includes these actions.
+The immutable [v0.4.7-beta.1 prerelease](https://github.com/armanas/froglet/releases/tag/v0.4.7-beta.1)
+includes native `run_compute`, read-only `get_task` and optional configured A2A.
+Choose that exact release for this compute profile. Verify its published manifest
+and matching binary checksum, then select the downloaded `froglet-node` binary
+in your agent's native MCP profile.
+
+Support in an installed release depends on its exact binary: inspect the native
+MCP `tools/list` response for `run_compute` and `get_task`, and check that
+release's notes. Source tests do not establish that an older immutable release
+includes these actions.
 
 Additional Linux arm64 qualification exercised 625 library tests and nine native
 MCP integration tests, then the selected-data and Wasm workflow. Thirteen tests
@@ -105,9 +111,15 @@ isolation claim. The Linux binary is a separate Docker development build from
 the same recorded production inputs. Clean-machine and actual Linux agent-host
 qualification remain open.
 
-The [verified local install](/learn/quickstart/) remains the normal release path.
-The two-node example below builds a source checkout and needs development tools.
-It is separate from the no-clone installer and does not change agent-host settings.
+[Quickstart](/learn/quickstart/) retains its exact `v0.4.6-beta.4` sharing baseline.
+For this compute profile, select `v0.4.7-beta.1` explicitly; GitHub's
+`releases/latest` does not select prereleases. In Quickstart's manual verification
+sequence, use `tag=v0.4.7-beta.1` and retain the manifest, asset checksum and
+installation-plan checks.
+
+The two-node example below uses the matching tagged source checkout and needs
+development tools. It is separate from the no-clone installer and does not
+change agent-host settings.
 
 ## Functionality and limits
 
@@ -115,7 +127,8 @@ It is separate from the no-clone installer and does not change agent-host settin
 
 ## Run the free Alice/Bob example
 
-Use a trusted checkout that contains `examples/a2a_compute_demo.py`, with
+Use a trusted [v0.4.7-beta.1 source checkout](https://github.com/armanas/froglet/tree/v0.4.7-beta.1)
+that contains `examples/a2a_compute_demo.py`, with
 Python 3.10+, Cargo/Rust and the `wasm32-unknown-unknown` target. From its root:
 
 ```bash
@@ -130,8 +143,9 @@ fresh keys, private state and free-only configuration. Alice supplies
 CLI check signed evidence and the canonical result hash.
 
 An older checkout or installed release may lack this example and these actions.
-This preview documents the current working source; it does not establish that
-the changes have been published in a release or on the repository's main branch.
+The native actions are included in `v0.4.7-beta.1`; the helper comes from its
+matching tagged source checkout. Running it demonstrates the local scenario
+described here. Public-deployment qualification remains separate.
 
 Before keeping the nodes available, the script checks an exact retry, refusal
 of changed input under the same key, an infinite loop stopped by the execution
