@@ -11,7 +11,7 @@ import type { TerminalAnimator } from './terminal';
  * Initialize the demo page: whiteboard canvas, terminal animator,
  * step navigation, keyboard shortcuts, and pip indicators.
  */
-export function initDemo(): void {
+export function initDemo(): () => void {
   // ── DOM elements ──
   const canvas = document.querySelector<HTMLCanvasElement>('#scene canvas');
   const lessonCard = document.getElementById('lesson-card');
@@ -21,7 +21,11 @@ export function initDemo(): void {
   const prevBtn = document.getElementById('prevBtn') as HTMLButtonElement | null;
   const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement | null;
 
-  if (!canvas || !lessonCard || !termBody) return;
+  if (!canvas || !lessonCard || !termBody) return () => {};
+
+  let disposed = false;
+  const listeners = new window.AbortController();
+  const signal = listeners.signal;
 
   // ── State ──
   let step = 0;
@@ -89,7 +93,7 @@ export function initDemo(): void {
     const animation = terminal.animate(s.term);
     updateNavState();
     animation.then(() => {
-      updateNavState();
+      if (!disposed) updateNavState();
     });
   }
 
@@ -122,10 +126,10 @@ export function initDemo(): void {
 
   // ── Button click handlers ──
   if (prevBtn) {
-    prevBtn.addEventListener('click', () => go(-1));
+    prevBtn.addEventListener('click', () => go(-1), { signal });
   }
   if (nextBtn) {
-    nextBtn.addEventListener('click', () => go(1));
+    nextBtn.addEventListener('click', () => go(1), { signal });
   }
 
   // ── Pip click handlers ──
@@ -136,7 +140,7 @@ export function initDemo(): void {
       if (stepAttr !== undefined) {
         goTo(parseInt(stepAttr, 10));
       }
-    });
+    }, { signal });
   }
 
   // ── Keyboard shortcuts (Req 6.1, 6.2, 6.3) ──
@@ -165,13 +169,20 @@ export function initDemo(): void {
         }
         break;
     }
-  });
+  }, { signal });
 
   // ── Window resize (Req 1.3) ──
   window.addEventListener('resize', () => {
     whiteboard.resize();
-  });
+  }, { signal });
 
   // ── Initial render ──
   renderLesson();
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    listeners.abort();
+    terminal.destroy();
+    whiteboard.destroy();
+  };
 }

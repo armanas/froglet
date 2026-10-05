@@ -16,6 +16,7 @@ function installDemoDom(): void {
 describe('demo navigation state', () => {
   let now: number;
   let rafCallbacks: Array<FrameRequestCallback>;
+  let dispose: (() => void) | undefined;
 
   beforeEach(() => {
     now = 0;
@@ -30,13 +31,29 @@ describe('demo navigation state', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    dispose?.();
+    dispose = undefined;
+    await Promise.resolve();
+    await Promise.resolve();
     vi.restoreAllMocks();
     document.body.innerHTML = '';
   });
 
+  it('returns an idempotent disposal handle for active typing', async () => {
+    dispose = initDemo();
+    expect(dispose).toBeTypeOf('function');
+    dispose();
+    dispose();
+    await Promise.resolve();
+    const button = document.getElementById('nextBtn')!;
+    const before = button.textContent;
+    button.click();
+    expect(button.textContent).toBe(before);
+  });
+
   it('labels the next button as Skip while the terminal animation is typing', async () => {
-    initDemo();
+    dispose = initDemo();
 
     const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement;
     expect(nextBtn.textContent).toBe('Skip');
@@ -54,6 +71,7 @@ describe('demo navigation state', () => {
 describe('walkthrough keyboard shortcuts', () => {
   let now: number;
   let rafCallbacks: Array<FrameRequestCallback>;
+  let dispose: (() => void) | undefined;
 
   function installScopedDom(): void {
     document.body.innerHTML = `
@@ -96,13 +114,17 @@ describe('walkthrough keyboard shortcuts', () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    dispose?.();
+    dispose = undefined;
+    await Promise.resolve();
+    await Promise.resolve();
     vi.restoreAllMocks();
     document.body.innerHTML = '';
   });
 
   it('ignores arrow keys pressed anywhere outside the walkthrough', async () => {
-    initDemo();
+    dispose = initDemo();
     const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement;
     expect(nextBtn.textContent).toBe('Skip');
 
@@ -117,7 +139,7 @@ describe('walkthrough keyboard shortcuts', () => {
   });
 
   it('steps with the arrow keys once focus is inside the walkthrough', async () => {
-    initDemo();
+    dispose = initDemo();
     const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement;
 
     press(nextBtn, { key: 'ArrowRight' }); // first press skips the typing animation
@@ -130,7 +152,7 @@ describe('walkthrough keyboard shortcuts', () => {
   });
 
   it('ignores modified keys and keys typed into form fields inside the walkthrough', async () => {
-    initDemo();
+    dispose = initDemo();
     const nextBtn = document.getElementById('nextBtn') as HTMLButtonElement;
     const field = document.getElementById('inside-field')!;
 

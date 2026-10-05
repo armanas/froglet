@@ -43,9 +43,14 @@ persistent Codex configuration change. Its guarded fresh-session repeat remains
 unrun; a separate deterministic replay cannot qualify those earlier sessions.
 That separate replay verified seven new signed chains and four independent input
 cases. With Bob stopped and Alice restarted, exact saved `run_compute` and
-`invoke_service` retries recovered results. `get_task` still requires Bob to
-refresh status and returned HTTP 502 while he was offline. Offline artifact
-verification and an online task-status read are distinct operations.
+`invoke_service` retries recovered results. In that historical replay, `get_task`
+returned HTTP 502 while Bob was offline. The `v0.4.7-beta.1` requester runtime
+subsequently added local revalidation of saved terminal Quote/Deal/Receipt
+evidence, so those reads can succeed without Bob. The JavaScript adapter calls
+that configured runtime API; it does not independently verify signatures.
+Requester deals without a saved Receipt still require provider status refresh;
+invalid saved evidence is refused. Older runtimes and provider-job fallback retain their own availability requirements;
+the fallback is used only after a requester-runtime 404 on a shared API base.
 
 ## Quick Start
 
