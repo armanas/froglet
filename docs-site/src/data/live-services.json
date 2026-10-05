@@ -1,0 +1,25 @@
+{
+  "schema": "froglet.services.page.v1",
+  "client_release": "v0.4.7-beta.1",
+  "qualification": null,
+  "provider": null,
+  "access": {"request_url": null, "session_expires_at": null},
+  "capacity": {
+    "limits_state": "proposed",
+    "limits": {"deals": 100, "quotes": 300, "reserved_runtime_ms": 200000},
+    "snapshot": null,
+    "public_status_endpoint": null
+  },
+  "ingress": {
+    "state": "proposed",
+    "requests_per_second": 1,
+    "burst": 5,
+    "connections": 2,
+    "measured_at": null,
+    "measurement_evidence_sha256": null
+  },
+  "services": {
+    "arithmetic": {"state": "pending", "program": null, "example": null},
+    "synthetic": {"state": "pending", "service_id": null, "share_url": null, "example": null}
+  }
+}

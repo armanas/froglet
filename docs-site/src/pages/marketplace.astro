@@ -2,6 +2,9 @@
 import StoryLayout from '../layouts/StoryLayout.astro';
 import AgentMeta from '../components/AgentMeta.astro';
 import '../styles/marketplace.css';
+import serviceExamples from '../data/live-services.json';
+import { servicesView } from '../data/live-services.mjs';
+const exampleView = servicesView(serviceExamples);
 
 const image = {
   src: 'https://froglet.dev/og/marketplace.png',
@@ -26,6 +29,8 @@ const image = {
       <output class="search-count" for="marketplace-search" data-marketplace-search-count>Loading</output>
     </div>
   </header>
+
+  {exampleView.arithmetic && exampleView.synthetic && <p class="mkt-message"><a href="/services/">Explore the two free reference experiments</a>: a supplied-program calculation and a selected synthetic catalog. Browse the metadata; execution requires a current individual invitation.</p>}
 
   <div class="mkt-bar" role="group" aria-label="Catalog status">
     <span class="marketplace-status" data-marketplace-field="refresh" data-status="pending">CHECKING</span>
