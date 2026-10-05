@@ -1,26 +1,40 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import * as asc from 'assemblyscript/asc';
+import adderSource from '../scripts/playground/functions/adder.as?raw';
+import { COMPILER_ARGS, CONTRACT } from '../scripts/playground/compiler';
 
-export const ADDER_BYTES = 29_036;
-export const ADDER_SHA256 = 'c54d02ca8c6f9db3a301ef1eebd7ed87c03d89bfa69c382d1f8cac22fc968553';
+export const ADDER_BYTES = 3484;
+export const ADDER_SHA256 = '31bc64a4c91dcb6e5258578eab5a2efe6a06c0ddd611458581bb83bb86f8bb28';
 
-/** The exact Rust example produced by the existing locked browser build. */
+/** Bind the public source compilation to its checked bytes and run_json ABI. */
 export function checkedAdder(bytes: Uint8Array): Uint8Array {
-  if (bytes.byteLength !== ADDER_BYTES || createHash('sha256').update(bytes).digest('hex') !== ADDER_SHA256) {
-    throw new Error('The generated Rust adder differs from the checked download fixture');
+  const actualSha256 = createHash('sha256').update(bytes).digest('hex');
+  if (bytes.byteLength !== ADDER_BYTES || actualSha256 !== ADDER_SHA256) {
+    throw new Error(`The compiled AssemblyScript adder differs from the checked download fixture: got ${bytes.byteLength} bytes, SHA-256 ${actualSha256}; expected ${ADDER_BYTES} bytes, SHA-256 ${ADDER_SHA256}`);
   }
   const module = new WebAssembly.Module(bytes as BufferSource);
   const exports = new Map(WebAssembly.Module.exports(module).map(({ name, kind }) => [name, kind]));
   if (WebAssembly.Module.imports(module).length || exports.get('memory') !== 'memory' ||
       exports.get('alloc') !== 'function' || exports.get('run') !== 'function') {
-    throw new Error('The checked Rust adder must export the run_json ABI and import nothing');
+    throw new Error('The checked AssemblyScript adder must export the run_json ABI and import nothing');
   }
   return bytes;
 }
 
-export function readAdder(siteRoot = process.cwd()): Uint8Array {
-  // npm runs the Astro build from docs-site. A source-relative import.meta URL
-  // would instead point into the generated server bundle while prerendering.
-  return checkedAdder(new Uint8Array(readFileSync(resolve(siteRoot, 'src/generated/playground/adder.wasm'))));
+/** Prerender from bundled public sources, independently of host-specific Rust builds. */
+export async function compileAdder(): Promise<Uint8Array> {
+  if (asc.version !== '0.28.20') throw new Error(`The checked adder requires AssemblyScript 0.28.20; got ${asc.version}`);
+  const program = `${adderSource}\n${CONTRACT}`;
+  const stderr = asc.createMemoryStream();
+  let binary: Uint8Array | undefined;
+  const result = await asc.main([...COMPILER_ARGS, 'input.ts'], {
+    stderr,
+    readFile: name => name === 'input.ts' ? program : null,
+    writeFile: (name, contents) => { if (name === 'binary' && typeof contents !== 'string') binary = contents; },
+    listFiles: () => [],
+  });
+  if (result.error || !binary) {
+    throw new Error(`Could not compile the public adder: ${result.error?.message ?? 'no binary output'}\n${stderr.toString()}`);
+  }
+  return checkedAdder(binary);
 }
