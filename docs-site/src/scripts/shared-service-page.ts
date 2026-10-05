@@ -25,7 +25,7 @@ function render() {
   const expired = latest.leaseExpiresAt !== null && latest.leaseExpiresAt * 1000 <= Date.now();
   element('service-summary').textContent = latest.summary;
   element('service-revision').textContent = latest.revision ?? 'No immutable revision reported';
-  element('service-marketplace').textContent = latest.marketplace === 'active' && !expired ? 'Active at the last check' : 'Pending, offline, or not verified';
+  element('service-marketplace').textContent = latest.marketplace === 'active' && !expired ? 'Active at the last check' : 'Availability not confirmed';
   element('service-example').textContent = JSON.stringify(latest.exampleInput, null, 2);
   element('checked-at').textContent = `Last successful check: ${new Date(latest.checkedAt).toLocaleString()}`;
 }

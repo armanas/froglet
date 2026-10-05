@@ -75,6 +75,20 @@ bundle checks below.
   behavior or settle the disputed advisory. No real credentials or requests
   were used.
 
+On October 5, the shared-service renderer's availability wording was reviewed
+independently and its source/Worker fingerprints refreshed. It displays
+“Availability not confirmed” while preserving the existing machine status,
+lease checks and registration behavior. The fresh production dry-run source
+map matched the same 11 files; all other Worker sources, configurations,
+dependency versions and the reviewed Astro caller were unchanged. The Worker
+contained no affected cache-policy code. The renderer SHA-256 is
+`3fda670ed4ec7f384cad3b543743793bffc57c598402d7b9ac87d308124b2c2b`;
+the normalized Worker SHA-256 is
+`dcef1268fbdb11a85e474b37cd4eca78ddb9e667a24b731bbf3f089dcb2f7834`.
+This copy change does not remediate the dependency behavior or extend the
+October 17 expiry. All rejection and mandatory audit/registry/bundle controls
+remain in place.
+
 Run the full audit with the reviewed guard after the website build:
 
 ```sh

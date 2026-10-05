@@ -17,7 +17,7 @@ const HASHES = {
   wranglerConfig: '989d153f2e16cc42ec0217255c04034ba2ecb87566b60393ddc4bc4a05d1db07',
   remoteSource: 'f373fa76e3112446db327c79b34e2bbb1ef1dcad41affb60788adf30edc9588e',
   // Only the generated Wasm filename's content hash is normalized. No JavaScript is omitted.
-  bundle: '5dfd76b021b363dabc4d38e99d4de627141fe9e7560f21bb0c96c265b6f14107',
+  bundle: 'dcef1268fbdb11a85e474b37cd4eca78ddb9e667a24b731bbf3f089dcb2f7834',
 };
 const WORKER_SOURCES = {
   'node_modules/qrcode-generator/dist/qrcode.mjs': 'ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0',
@@ -27,7 +27,7 @@ const WORKER_SOURCES = {
   'src/data/live-snapshot.ts': '11376a70e5a7d39b0a19f2ba1724e60c06ab0183ab72528eae3b970ef0f989da',
   'src/data/file-download.ts': 'aaf23bc51f8e444ac56d08d9738fef80cd9481ea07e75190a0b76f6b53386dfa',
   'src/data/service-link.ts': '094e567764f5715c7c8ddf8bbe8b350ac897d3e40412e921b704e3fa18db3b47',
-  'src/data/service-link-page.ts': '3b2162409d15f51a7e9196246fdc12b4f7e421b5fcf6ee1b6019b123f9d719d5',
+  'src/data/service-link-page.ts': '3fda670ed4ec7f384cad3b543743793bffc57c598402d7b9ac87d308124b2c2b',
   'src/data/service-link-verifier.ts': 'ecee4c186515e943629a15a281ce8843001e3f7e69bf57c9af3104940abbc3b3',
   'src/generated/verifier/froglet_verify.js': '4c938b45a3d3abdf7aeaf000a5fcca4b70bd678989a06d9f61d557ae8ab1da09',
   'src/worker.ts': '61644024eb044d59bb7186239a3cf48e2bd5634fa7683153f2544372502996cb',

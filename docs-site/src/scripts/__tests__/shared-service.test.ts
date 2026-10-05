@@ -84,6 +84,15 @@ describe('recipient page recovery', () => {
       expect(document.getElementById('service-revision')!.textContent).toBe(revision.revision_hash);
     } finally { cleanup(); }
   });
+  it('labels an unconfirmed marketplace response without claiming pending registration or offline service', async () => {
+    try {
+      await mount(vi.fn().mockResolvedValue(response({ summary:'Catalog', revision:revision.revision_hash,
+        marketplace:'pending_or_offline', leaseExpiresAt:null, checkedAt:new Date().toISOString(),
+        free:true, exampleInput:{op:'describe'} })));
+      expect(document.getElementById('service-marketplace')!.textContent).toBe('Availability not confirmed');
+      expect(document.getElementById('availability')!.textContent).toContain('Provider reachable');
+    } finally { cleanup(); }
+  });
   it('does not fetch or offer a recipient prompt for an invalid reference', async () => {
     try {
       const fetcher = vi.fn(); await mount(fetcher, '?provider=invalid&service=catalog');
