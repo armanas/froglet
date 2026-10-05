@@ -84,6 +84,23 @@ describe('agent-readable service link', () => {
     expect(JSON.stringify(view)).toContain('froglet.service-link.v1');
   });
 
+  it('describes unknown marketplace availability without changing the wire enum or invitation access', async () => {
+    const listing = { provider_id: provider, offer_id: 'offer-1', artifact_hash: offerHash,
+      availability: { admission: 'unknown', status: 'unknown', lease_expires_at: null } };
+    const view = await resolveServiceLink(provider, service, origin,
+      fetchSequence({ ...reference, execution_access: 'invite' }, offer, descriptor, listing),
+      { marketplaceUrl: 'https://marketplace.froglet.dev' }, verifier);
+    expect(view.availability.state).toBe('published_reachable');
+    expect(view.availability.marketplace_admission).toBe('pending_or_offline');
+    expect(JSON.stringify(view)).toContain('"marketplace_admission":"pending_or_offline"');
+    const html = renderServiceLinkHtml(view);
+    expect(html).toContain('<dt>Marketplace</dt><dd>Availability not confirmed</dd>');
+    expect(html).toContain('Invitation required');
+    expect(html).not.toContain('pending or offline');
+    expect(html).not.toContain('Indexed');
+    expect(renderServiceLinkMarkdown(view)).toContain('Marketplace admission: Availability not confirmed');
+  });
+
   it('provides a compact service-specific preview and a public square PNG without JavaScript', async () => {
     const view = await resolveServiceLink(provider, service, origin, fetchSequence(reference, offer, descriptor), {}, verifier);
     const page = new DOMParser().parseFromString(renderServiceLinkHtml(view), 'text/html');
