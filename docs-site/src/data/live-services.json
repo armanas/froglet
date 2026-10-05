@@ -1,25 +1,118 @@
 {
   "schema": "froglet.services.page.v1",
   "client_release": "v0.4.7-beta.1",
-  "qualification": null,
-  "provider": null,
-  "access": {"request_url": null, "session_expires_at": null},
+  "qualification": {
+    "passed": true,
+    "observed_at": "2026-10-05T15:42:17.230Z",
+    "root_evidence_sha256": "53407aa83002310532be862d68763041ca5a7fdc628df4dd1f9b88afb181a4b4",
+    "independent_review_sha256": "c1349a916307aebf7a8ce7f9cdf0eb3a497b55dfd6611bc6dc4d63fd2b1fd245"
+  },
+  "provider": {
+    "id": "67db3b7ea8d885824426272e97d220d25fac21d1f9e4eab067f24d01995e97d8",
+    "origin": "https://m7ntw7vi3ccyerbge4xjpura2jp2yior7hsovmdh6jgqdgk6s7ma.relay.froglet.dev",
+    "instance_count": 1,
+    "metadata_url": "https://m7ntw7vi3ccyerbge4xjpura2jp2yior7hsovmdh6jgqdgk6s7ma.relay.froglet.dev/.well-known/agent-card.json"
+  },
+  "access": {
+    "request_url": "https://github.com/armanas/froglet/discussions/new?category=q-a",
+    "session_expires_at": "2026-10-05T16:09:52Z"
+  },
   "capacity": {
-    "limits_state": "proposed",
-    "limits": {"deals": 100, "quotes": 300, "reserved_runtime_ms": 200000},
-    "snapshot": null,
+    "limits_state": "observed",
+    "limits": {
+      "deals": 100,
+      "quotes": 300,
+      "reserved_runtime_ms": 200000
+    },
+    "snapshot": {
+      "observed_at": "2026-10-05T15:42:17.230Z",
+      "evidence_sha256": "997dc7d1a30aed4475dc031d8e839f4f76019848ddca427f1925813f3f3f83ea",
+      "reserved_deals": 6,
+      "issued_quotes": 6,
+      "reserved_runtime_ms": 12000
+    },
     "public_status_endpoint": null
   },
   "ingress": {
-    "state": "proposed",
+    "state": "configured",
     "requests_per_second": 1,
     "burst": 5,
     "connections": 2,
-    "measured_at": null,
-    "measurement_evidence_sha256": null
+    "measured_at": "2026-10-05T15:42:17.230Z",
+    "measurement_evidence_sha256": "53407aa83002310532be862d68763041ca5a7fdc628df4dd1f9b88afb181a4b4"
   },
   "services": {
-    "arithmetic": {"state": "pending", "program": null, "example": null},
-    "synthetic": {"state": "pending", "service_id": null, "share_url": null, "example": null}
+    "arithmetic": {
+      "state": "observed",
+      "program": {
+        "sha256": "31bc64a4c91dcb6e5258578eab5a2efe6a06c0ddd611458581bb83bb86f8bb28",
+        "bytes": 3484,
+        "abi": "froglet.wasm.run_json.v1",
+        "download_url": "https://froglet.dev/services/adder.wasm"
+      },
+      "example": {
+        "input": {
+          "a": 6,
+          "b": 7
+        },
+        "expected_result": {
+          "product": 42,
+          "sum": 13
+        },
+        "receipt_evidence_sha256": "8b13435c8b169592627b34f982fa0eebbd906d9058a1efff081a327d941b06dc"
+      }
+    },
+    "synthetic": {
+      "state": "observed",
+      "service_id": "synthetic-terminology-demo",
+      "share_url": null,
+      "example": {
+        "input": {
+          "collection": "terminology",
+          "columns": [
+            "source",
+            "target"
+          ],
+          "limit": 100,
+          "op": "select"
+        },
+        "expected_result": {
+          "collection": "terminology",
+          "columns": [
+            "source",
+            "target"
+          ],
+          "contract_version": "froglet.builtin.data_query.v1",
+          "has_more": false,
+          "limit": 100,
+          "offset": 0,
+          "returned": 5,
+          "rows": [
+            {
+              "source": "DEMO:sample.plasma",
+              "target": "DEMO:specimen.plasma"
+            },
+            {
+              "source": "DEMO:sample.serum",
+              "target": "DEMO:specimen.serum"
+            },
+            {
+              "source": "DEMO:sample.blood",
+              "target": "DEMO:specimen.whole_blood"
+            },
+            {
+              "source": "DEMO:sample.blood",
+              "target": "DEMO:specimen.plasma"
+            },
+            {
+              "source": "DEMO:sample.plasma",
+              "target": "DEMO:specimen.plasma"
+            }
+          ],
+          "source_kind": "json"
+        },
+        "receipt_evidence_sha256": "8b13435c8b169592627b34f982fa0eebbd906d9058a1efff081a327d941b06dc"
+      }
+    }
   }
 }

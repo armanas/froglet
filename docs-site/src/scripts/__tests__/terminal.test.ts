@@ -33,6 +33,7 @@ describe('createTerminalAnimator', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     document.body.innerHTML = '';
   });
@@ -101,6 +102,17 @@ describe('createTerminalAnimator', () => {
     flushFrames(10);
     await promise;
 
+    expect(animator.isTyping()).toBe(false);
+  });
+
+  it('destroy cancels the pending tick and settles without another browser frame', async () => {
+    vi.useFakeTimers();
+    const animator = createTerminalAnimator(makeBody());
+    const promise = animator.animate(SIMPLE_LINES);
+    expect(vi.getTimerCount()).toBe(1);
+    animator.destroy();
+    expect(vi.getTimerCount()).toBe(0);
+    await promise;
     expect(animator.isTyping()).toBe(false);
   });
 

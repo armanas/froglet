@@ -1,9 +1,9 @@
 // @vitest-environment node
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import pendingData from '../../data/live-services.json';
+import pageData from '../../data/live-services.json';
 import {servicesView, recordedSessionAccess} from '../../data/live-services.mjs';
-const pending = () => JSON.parse(JSON.stringify(pendingData));
+const pending = () => ({schema:pageData.schema,client_release:pageData.client_release,qualification:null,provider:null,access:{request_url:null,session_expires_at:null},capacity:{limits_state:'proposed',limits:{...pageData.capacity.limits},snapshot:null,public_status_endpoint:null},ingress:{state:'proposed',requests_per_second:1,burst:5,connections:2,measured_at:null,measurement_evidence_sha256:null},services:{arithmetic:{state:'pending',program:null,example:null},synthetic:{state:'pending',service_id:null,share_url:null,example:null}}});
 const h = 'a'.repeat(64), at = '2026-10-05T12:00:00Z';
 // Entirely invented fixtures for rendering policy; no runtime qualification.
 function observed() {
@@ -27,7 +27,7 @@ test('remaining count uses reserved maxima and retains actual observation time',
 test('remaining snapshot cannot be unlabeled, invented on pending state or noninteger', () => {for(const kind of ['timestamp','pending','counter']) {const s=observed();if(kind==='timestamp')s.capacity.snapshot.observed_at=null;if(kind==='pending')s.qualification=null;if(kind==='counter')s.capacity.snapshot.reserved_deals=true;assert.throws(()=>servicesView(s));}});
 test('a depleted counter never creates negative remaining or replenishes capacity', () => {const s=observed();s.capacity.snapshot.reserved_runtime_ms=200001;assert.equal(servicesView(s).remaining.reserved_runtime_ms,0);});
 test('unproved public capacity status path cannot become a live counter', () => {const s=observed();s.capacity.public_status_endpoint='https://fixture.invalid/status';assert.throws(()=>servicesView(s));});
-test('qualified examples require actual finite capacity and public ingress measurement', () => {for(const kind of ['ingress','snapshot','limits','proof']) {const s=observed();if(kind==='ingress')s.ingress.state='proposed';if(kind==='snapshot')s.capacity.snapshot=null;if(kind==='limits')s.capacity.limits_state='proposed';if(kind==='proof')s.ingress.measurement_evidence_sha256=null;assert.throws(()=>servicesView(s));}});
+test('qualified examples require actual finite capacity and recorded public ingress', () => {for(const kind of ['ingress','snapshot','limits','proof']) {const s=observed();if(kind==='ingress')s.ingress.state='proposed';if(kind==='snapshot')s.capacity.snapshot=null;if(kind==='limits')s.capacity.limits_state='proposed';if(kind==='proof')s.ingress.measurement_evidence_sha256=null;assert.throws(()=>servicesView(s));}});
 test('private report or credential fields are rejected, including nested provider data', () => {for(const kind of ['root','provider']) {const s=observed();if(kind==='root')s.private_report={};else s.provider.token='never-publish';assert.throws(()=>servicesView(s));}});
 test('metadata without a signed example does not produce a call', () => {const s=observed();s.services.synthetic.example.receipt_evidence_sha256=null;assert.throws(()=>servicesView(s));});
 test('catalog rejects invented query/filter operations and compound equals', () => {for(const input of [{op:'query',collection:'rows'}, {op:'select',collection:'rows',filter:{}}, {op:'select',collection:'rows',equals:{id:[]}}]) {const s=observed();s.services.synthetic.example.input=input;assert.throws(()=>servicesView(s));}});
@@ -41,3 +41,7 @@ test('pending data cannot retain invitation links or hidden observed examples', 
 
 test('metadata inspection and recorded examples survive session expiry without implying execution access', () => {const s=observed();const v=servicesView(s,Date.parse(s.access.session_expires_at));assert.equal(v.access_state,'recorded-session-expired');assert.ok(v.arithmetic);assert.ok(v.synthetic);assert.equal(recordedSessionAccess(s.access.session_expires_at,Date.parse(s.access.session_expires_at)-1),'invitation-required');});
 test('metadata links require an actually selected same-origin public URL without credential query', () => {for(const metadata of [null,'https://other.invalid/card.json','https://fixture.invalid/card.json?token=private']) {const s=observed();s.provider.metadata_url=metadata;assert.throws(()=>servicesView(s));}});
+
+test('configured ingress retains recorded timestamp and evidence requirements', () => {const s=observed();s.ingress.state='configured';assert.equal(servicesView(s).qualified,true);for(const field of ['measured_at','measurement_evidence_sha256']) {const broken=observed();broken.ingress.state='configured';broken.ingress[field]=null;assert.throws(()=>servicesView(broken));}});
+
+test('public invitation request uses the approved Q&A discussion without granting access', () => {const url=new URL(pageData.access.request_url);assert.equal(url.origin,'https://github.com');assert.equal(url.pathname,'/armanas/froglet/discussions/new');assert.equal(url.searchParams.get('category'),'q-a');assert.equal(url.username,'');assert.equal(url.password,'');assert.equal(servicesView(pageData).qualified,true);});

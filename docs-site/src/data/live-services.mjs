@@ -67,12 +67,12 @@ export function servicesView(state, now = Date.now()) {
   // No non-secret current-status endpoint has been qualified. This proposal
   // intentionally does not poll one or turn snapshots into live counts.
   need(state.capacity.public_status_endpoint === null, 'Public status path needs separate actual qualification and implementation');
-  need(['proposed', 'measured'].includes(state.ingress.state) && ['requests_per_second', 'burst', 'connections'].every(k => integer(state.ingress[k]) && state.ingress[k] > 0), 'Finite ingress values/status required');
-  if (state.ingress.state === 'measured') need(qualified && instant(state.ingress.measured_at) && hash(state.ingress.measurement_evidence_sha256), 'Public client measurement required before rate limits become final');
+  need(['proposed', 'configured', 'measured'].includes(state.ingress.state) && ['requests_per_second', 'burst', 'connections'].every(k => integer(state.ingress[k]) && state.ingress[k] > 0), 'Finite ingress values/status required');
+  if (state.ingress.state !== 'proposed') need(qualified && instant(state.ingress.measured_at) && hash(state.ingress.measurement_evidence_sha256), 'Recorded public ingress observation required');
   need(state.access.request_url === null || https(state.access.request_url), 'Invitation instructions must use an approved HTTPS link');
   need(state.access.session_expires_at === null || instant(state.access.session_expires_at), 'Session expiry must be explicit UTC');
   if (qualified) {
-    need(state.capacity.limits_state === 'observed' && snapshot !== null && state.ingress.state === 'measured', 'Qualified examples need actual finite allowances and measured public ingress');
+    need(state.capacity.limits_state === 'observed' && snapshot !== null && ['configured', 'measured'].includes(state.ingress.state), 'Qualified examples need actual finite allowances and recorded public ingress');
     need(instant(state.access.session_expires_at) && Date.parse(state.access.session_expires_at) > Date.parse(q.observed_at), 'Qualified session needs an explicit expiry after the recorded qualification');
   }
   const a = state.services.arithmetic, s = state.services.synthetic;

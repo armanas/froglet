@@ -17,19 +17,6 @@ const PROMPT_PAUSE = 140;
 const POST_COMMAND_PAUSE = 70;
 const OUTPUT_LINE_PAUSE = 45;
 
-function nextAnimationTick(): Promise<void> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = () => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
-    requestAnimationFrame(done);
-    window.setTimeout(done, 16);
-  });
-}
-
 // ── DOM helpers ──
 
 function promptMarkup(p: string): string {
@@ -68,6 +55,26 @@ export function createTerminalAnimator(body: HTMLElement): TerminalAnimator {
   let skipRequested = false;
   let runId = 0;
   let destroyed = false;
+  let cancelTick: (() => void) | null = null;
+
+  function nextAnimationTick(): Promise<void> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let frame: number | null = null;
+      let timer: number | null = null;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        if (frame !== null) window.cancelAnimationFrame(frame);
+        if (timer !== null) window.clearTimeout(timer);
+        if (cancelTick === done) cancelTick = null;
+        resolve();
+      };
+      cancelTick = done;
+      frame = window.requestAnimationFrame(done);
+      timer = window.setTimeout(done, 16);
+    });
+  }
 
   /** Wait for `ms` milliseconds, returning early on abort or skip. */
   async function waitOrSkip(
@@ -75,7 +82,7 @@ export function createTerminalAnimator(body: HTMLElement): TerminalAnimator {
     rid: number,
   ): Promise<'ok' | 'skip' | 'abort'> {
     const end = performance.now() + ms;
-    while (performance.now() < end) {
+    while (rid === runId && performance.now() < end) {
       if (rid !== runId) return 'abort';
       if (skipRequested) return 'skip';
       await nextAnimationTick();
@@ -87,6 +94,7 @@ export function createTerminalAnimator(body: HTMLElement): TerminalAnimator {
     if (destroyed) return;
 
     const rid = ++runId;
+    cancelTick?.();
     typing = true;
     skipRequested = false;
     body.innerHTML = '';
@@ -149,8 +157,10 @@ export function createTerminalAnimator(body: HTMLElement): TerminalAnimator {
   }
 
   function destroy(): void {
+    if (destroyed) return;
     destroyed = true;
     runId++;          // abort any in-flight animation
+    cancelTick?.();
     typing = false;
     skipRequested = false;
   }
