@@ -2,6 +2,7 @@
 // availability. No DOM access, so every rule here is unit-tested directly.
 
 import type { MarketplaceOfferSummary } from '../data/live-snapshot';
+import { PUBLIC_DEMO } from '../data/public-demo-config';
 import { serviceName } from '../data/service-presentation';
 
 export type AvailabilityState = 'ready' | 'warn' | 'unknown';
@@ -34,6 +35,14 @@ const SHARE_PATH = /^\/s\/[a-f0-9]{64}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/;
 /** Only a well-formed first-party share path is ever linked. */
 export function hasShareLink(offer: MarketplaceOfferSummary): boolean {
 	return Boolean(offer.sharePath && SHARE_PATH.test(offer.sharePath));
+}
+
+/** This site's two anonymous demo operations. Registry-supplied URLs never become actions. */
+export function publicDemoLink(offer: MarketplaceOfferSummary): string | undefined {
+	if (offer.providerId !== PUBLIC_DEMO.providerId || !isFree(offer) || offer.availability?.admission === 'invitation_required') return undefined;
+	const compute = offer.offerId === PUBLIC_DEMO.computeOffer && offer.offerKind === 'compute.wasm.v1' && offer.runtime === 'wasm' && offer.packageKind === 'inline_module';
+	const catalog = offer.offerId === PUBLIC_DEMO.catalogService && offer.offerKind === PUBLIC_DEMO.catalogService && offer.runtime === 'builtin' && offer.packageKind === 'builtin';
+	return compute || catalog ? '/services/#try-it' : undefined;
 }
 
 /** Shared services are the ones with a share link; everything else is grouped by what the offer does. */

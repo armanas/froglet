@@ -24,6 +24,7 @@ NODE = 'http://127.0.0.1:8080'
 CATALOG = 'synthetic-terminology-demo'
 MAX_REQUEST = 786432
 MAX_RESPONSE = 1048576
+MAX_METADATA_RESPONSE = 32768
 MAX_HTTP_REQUESTS = 50000
 MAX_HTTP_BYTES = 16 * 1024**3
 MAX_INPUT = 131072
@@ -157,11 +158,11 @@ class TrafficLedger:
         finally:
             c.close()
 
-    def reserve(self, request_bytes):
+    def reserve(self, request_bytes, response_limit=MAX_RESPONSE):
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
             requests, reserved = c.execute('SELECT requests,bytes FROM traffic WHERE id=1').fetchone()
-            amount = request_bytes + MAX_RESPONSE
+            amount = request_bytes + response_limit
             if requests >= MAX_HTTP_REQUESTS or reserved + amount > MAX_HTTP_BYTES:
                 return False
             c.execute('UPDATE traffic SET requests=requests+1,bytes=bytes+? WHERE id=1', (amount,))
@@ -185,6 +186,86 @@ def native(method, path, body=None, token=None):
             raise RuntimeError('response-too-large')
         json.loads(raw)
         return response.status, raw
+
+
+def publication_records():
+    """Selected public catalog only; never fetch the node's visitor ledger feed."""
+    status, raw = native('GET', '/v1/provider/offers')
+    if status != 200:
+        raise RuntimeError('public-offers-unavailable')
+    offers = [o for o in json.loads(raw)['offers']
+              if o.get('artifact_type') == 'offer'
+              and o.get('payload', {}).get('offer_id') == CATALOG
+              and o.get('payload', {}).get('provider_id') == Handler.provider_id]
+    if len(offers) > 1:
+        raise RuntimeError('ambiguous-public-offer')
+    if not offers:
+        return [], []
+    offer = offers[0]
+    hashes = [offer['payload']['descriptor_hash'], offer['hash']]
+    records = []
+    for kind, artifact_hash in zip(('descriptor', 'offer'), hashes):
+        if not hash_string(artifact_hash):
+            raise RuntimeError('invalid-public-artifact-hash')
+        status, raw = native('GET', '/v1/artifacts/' + artifact_hash)
+        if status != 200:
+            raise RuntimeError('public-artifact-unavailable')
+        record = json.loads(raw)
+        document = record['document']
+        if (record['hash'] != artifact_hash or record['kind'] != kind
+                or record['actor_id'] != Handler.provider_id
+                or not exact_int(record['cursor'], 1, 9223372036854775807)
+                or document['hash'] != artifact_hash
+                or document['artifact_type'] != kind
+                or document['payload']['provider_id'] != Handler.provider_id
+                or (kind == 'offer' and document != offer)):
+            raise RuntimeError('public-artifact-binding-mismatch')
+        records.append(record)
+    return sorted(records, key=lambda r: r['cursor']), [offer['hash']]
+
+
+def feed_query(path):
+    """Strict finite query grammar; no unknown, repeated or encoded selectors."""
+    if path == '/v1/feed':
+        return 0, 50
+    if not path.startswith('/v1/feed?'):
+        return None
+    fields = path.split('?', 1)[1].split('&')
+    values = {}
+    for field in fields:
+        match = re.fullmatch('(cursor|limit)=([0-9]{1,19})', field)
+        if not match or match[1] in values:
+            return None
+        values[match[1]] = int(match[2])
+    cursor, limit = values.get('cursor', 0), values.get('limit', 50)
+    return (cursor, limit) if cursor <= 9223372036854775807 and 1 <= limit <= 100 else None
+
+
+def canary_request_valid(path, value):
+    if (not only(value, {'schema_version', 'revision_hash', 'offer_hash', 'challenge', 'input'})
+            or value.get('schema_version') != 'froglet.publication-canary-request.v1'
+            or not all(hash_string(value.get(k)) for k in ('revision_hash', 'offer_hash', 'challenge'))
+            or path != '/v1/publications/' + value['revision_hash'] + '/canary'
+            or not safe_json(value.get('input'))):
+        return False
+    return True
+
+
+def allowed_canary(path, value):
+    if not canary_request_valid(path, value):
+        return False
+    status, raw = native('GET', '/v1/provider/services/' + CATALOG)
+    if status != 200:
+        return False
+    metadata = json.loads(raw)
+    revision = metadata['publication_revision']
+    # The immutable fixture is already public synthetic data. No arbitrary
+    # program, private service or input can enter through the canary endpoint.
+    starter = json.loads(metadata['service']['starter'])
+    return (value['revision_hash'] == revision['revision_hash']
+            and value['offer_hash'] == revision['payload']['offer_hash']
+            and json.dumps(value['input'], sort_keys=True, allow_nan=False)
+            == json.dumps(starter, sort_keys=True, allow_nan=False))
 
 
 class Server(http.server.ThreadingHTTPServer):
@@ -244,8 +325,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def handle_public(self, post):
         path = self.path
-        known_get = path in {'/health', '/demo/status', '/v1/provider/descriptor', '/v1/provider/offers', '/v1/provider/services/' + CATALOG} or re.fullmatch('/v1/provider/deals/[a-zA-Z0-9_-]{1,128}', path)
-        if (post and path not in {'/v1/provider/quotes', '/v1/provider/deals'}) or (not post and not known_get):
+        feed = feed_query(path)
+        artifact = re.fullmatch('/v1/artifacts/([0-9a-f]{64})', path)
+        canary = re.fullmatch('/v1/publications/([0-9a-f]{64})/canary', path)
+        metadata = feed is not None or artifact or path == '/v1/node/capabilities'
+        known_get = metadata or path in {'/health', '/demo/status', '/v1/provider/descriptor', '/v1/provider/offers', '/v1/provider/services/' + CATALOG} or re.fullmatch('/v1/provider/deals/[a-zA-Z0-9_-]{1,128}', path)
+        if (post and path not in {'/v1/provider/quotes', '/v1/provider/deals'} and not canary) or (not post and not known_get):
             self.answer(404, {'error': 'This operation is not exposed by the public demo.'})
             return
         if not self.slots.acquire(blocking=False):
@@ -255,6 +340,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.connection.settimeout(10)
             body = None
             size = 0
+            response_limit = MAX_METADATA_RESPONSE if metadata else MAX_RESPONSE
             if post:
                 if self.headers.get('transfer-encoding') or self.headers.get('content-type', '').split(';')[0].strip().lower() != 'application/json':
                     self.answer(415, {'error': 'Send a bounded JSON request.'})
@@ -273,17 +359,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return
                 try:
                     value = json.loads(raw)
-                    allowed = allowed_post(path, value, self.provider_id)
+                    allowed = canary_request_valid(path, value) if canary else allowed_post(path, value, self.provider_id)
                 except (ValueError, RecursionError, TypeError, OverflowError):
                     allowed = False
                 if not allowed:
                     self.answer(400, {'error': 'Only free pure-Wasm jobs and the selected synthetic catalog are accepted.'})
                     return
                 body = raw
-            if path != '/health' and not self.ledger.reserve(size):
+            if path != '/health' and not self.ledger.reserve(size, response_limit):
                 self.answer(429, {'error': 'The shared beta traffic allowance is spent. Existing usage is preserved.'})
                 return
-            if path == '/demo/status':
+            if canary and not allowed_canary(path, value):
+                self.answer(400, {'error': 'Only the current public catalog verification fixture is accepted.'})
+                return
+            if feed is not None or artifact:
+                records, hashes = publication_records()
+                if artifact:
+                    match = next((r for r in records if r['hash'] == artifact[1]), None)
+                    if match is None:
+                        self.answer(404, {'error': 'Only current public catalog artifacts are exposed.'})
+                        return
+                    raw = encoded(match)
+                else:
+                    cursor, limit = feed
+                    remaining = [r for r in records if r['cursor'] > cursor]
+                    page = remaining[:limit]
+                    raw = encoded({'artifacts': page, 'active_offer_hashes': hashes,
+                                   'cursor_type': 'artifact_sequence', 'cursor_semantics': 'exclusive_after',
+                                   'applied_cursor': cursor, 'page_size': limit,
+                                   'has_more': len(remaining) > limit,
+                                   'next_cursor': page[-1]['cursor'] if page else None})
+                if len(raw) > response_limit:
+                    raise RuntimeError('public-metadata-too-large')
+                self.answer(200, raw)
+            elif path == '/demo/status':
                 token_path = Path(os.environ['FROGLET_DATA_ROOT']) / 'runtime/froglet-control.token'
                 if token_path.is_symlink() or not token_path.is_file():
                     raise RuntimeError('control-token-unavailable')
@@ -298,6 +407,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                   'observed_at': int(time.time())})
             else:
                 status, raw = native('POST' if post else 'GET', path, body)
+                if len(raw) > response_limit:
+                    raise RuntimeError('public-metadata-too-large')
                 self.answer(status, raw)
         except (OSError, ValueError, RuntimeError, sqlite3.Error, KeyError):
             try:

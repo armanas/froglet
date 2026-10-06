@@ -77,6 +77,7 @@
 .story-main .mkt .mkt-btn--primary:hover { background: var(--frog-500); }
 
 .story-main .mkt-message { margin: 12px 2px 0; color: var(--fg2); font-size: 14px; }
+.story-main .mkt-explanation { margin: 16px 2px 0; color: var(--fg2); font-size: 14px; }
 .story-main .mkt[data-status='stale'] .mkt-message { color: var(--mkt-warn); }
 .story-main .mkt[data-status='unavailable'] .mkt-message { color: var(--mkt-danger); }
 
