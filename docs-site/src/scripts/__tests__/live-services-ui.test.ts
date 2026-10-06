@@ -74,6 +74,13 @@ test.each(['execution_limit_exceeded', 'execution_timed_out', 'execution_failed'
   expect($<HTMLDetailsElement>('[data-exchange-export]').hidden).toBe(false);
 });
 
+test.each([false, true])('the native allowance does not promise jobs beyond the shared network limits (paused=%s)', async (paused) => {
+  vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ remaining: { deals: 955 }, paused })));
+  $<HTMLButtonElement>('[data-run-program]').click();
+  await result();
+  await vi.waitFor(() => expect($('[data-demo-capacity]').textContent).toBe(`Native allowance: 955 job admissions remaining. Shared network limits may stop access sooner. ${paused ? 'New jobs are paused.' : 'A restart does not refill allowances.'}`));
+});
+
 test('a pending signed job remains recoverable after a cached-page round trip', async () => {
   mocks.resume.mockResolvedValueOnce({ terminal: false, reason: 'Retry the same job.' });
   $<HTMLButtonElement>('[data-run-program]').click();
