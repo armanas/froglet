@@ -678,3 +678,143 @@ describe('service availability', () => {
     expect(serviceAvailability({} as any).ready).toBe(false);
   });
 });
+
+describe('availability between snapshot refreshes', () => {
+  const availabilityDetail = (item: HTMLElement) => Array.from(item.querySelectorAll('.mkt-facts > div'))
+    .find((fact) => fact.querySelector('dt')?.textContent === 'Availability')!.querySelector('dd')!.textContent;
+  const row = (id: string) => items().find((item) => item.dataset.key === `${provider}:${id}`)!;
+
+  it('expires a 60-second check at its remaining deadline without requesting another snapshot', async () => {
+    vi.useFakeTimers(); dashboard();
+    await refresh(catalog([shared('expiring', { availability: { ...checked(20), lastCheckedAt: Date.now() / 1000 - 40 } })]));
+    const item = row('expiring');
+    toggle('ready').click();
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Recently checked');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(row('expiring')).toBe(item);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Check expired');
+    expect(item.querySelector<HTMLElement>('.service-availability')!.dataset).toMatchObject({ ready: 'false', state: 'warn' });
+    expect(item.querySelector('.mkt-inline__status')!.textContent).toBe(' · Check expired');
+    expect(availabilityDetail(item)).toBe('Check expired · open');
+    expect(item.dataset).toMatchObject({ ready: 'false', sortStatus: '2' });
+    expect(item.hidden).toBe(true);
+    expect(field('recentServices')).toBe('0');
+    expect(count()).toBe('0 services');
+    expect($('[data-marketplace-no-results]').hidden).toBe(false);
+  });
+
+  it('expires during a pending refresh and recovers when that request returns a renewed check', async () => {
+    vi.useFakeTimers(); dashboard();
+    await refresh(catalog([shared('expiring', { availability: checked(20) })]));
+    const item = row('expiring');
+    let resolveRequest!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise<Response>((resolveRequestValue) => { resolveRequest = resolveRequestValue; }));
+    $('[data-marketplace-refresh]').click();
+    toggle('ready').click();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(row('expiring')).toBe(item);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Check expired');
+    expect(item.hidden).toBe(true);
+    expect(field('recentServices')).toBe('0');
+    expect(count()).toBe('0 services');
+    expect($<HTMLButtonElement>('[data-marketplace-refresh]').disabled).toBe(true);
+    resolveRequest(new Response(JSON.stringify(catalog([shared('expiring')]))));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(row('expiring').querySelector('.service-availability')!.textContent).toBe('Recently checked');
+    expect(row('expiring').hidden).toBe(false);
+    expect(count()).toBe('1 service');
+  });
+
+  it('keeps a refused refresh stale on later ticks and preserves the existing row and drawer', async () => {
+    vi.useFakeTimers(); dashboard();
+    await refresh(catalog([shared('long-lived', { availability: checked(120) })]));
+    const item = row('long-lived');
+    const button = item.querySelector<HTMLButtonElement>('[data-marketplace-toggle]')!;
+    button.click();
+    const detail = item.querySelector<HTMLElement>('.mkt-detail')!;
+    await respond(snapshot({ status: 'fail', detail: 'Refused fixture refresh' }), 503);
+    expect(row('long-lived')).toBe(item);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(detail.hidden).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Status needs refresh');
+    expect(item.dataset.ready).toBe('false');
+    expect(field('recentServices')).toBe('0');
+    expect($('[data-marketplace-field="refresh"]').textContent).toBe('STALE');
+  });
+
+  it('updates status sorting while preserving the row, open drawer, focused toggle and flash', async () => {
+    vi.useFakeTimers(); dashboard();
+    await refresh(catalog([shared('zeta', { availability: checked(20) }), shared('alpha', { availability: undefined })]));
+    const item = row('zeta');
+    const button = item.querySelector<HTMLButtonElement>('[data-marketplace-toggle]')!;
+    const detail = item.querySelector<HTMLElement>('.mkt-detail')!;
+    item.classList.add('is-updated');
+    button.click(); button.focus();
+    const controls = button.getAttribute('aria-controls');
+    expect(names()).toEqual(['Zeta', 'Alpha']);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(names()).toEqual(['Alpha', 'Zeta']);
+    expect(row('zeta')).toBe(item);
+    expect(item.querySelector('[data-marketplace-toggle]')).toBe(button);
+    expect(item.querySelector('.mkt-detail')).toBe(detail);
+    expect(button.getAttribute('aria-controls')).toBe(controls);
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(detail.hidden).toBe(false);
+    expect(document.activeElement).toBe(button);
+    expect(item.classList.contains('is-updated')).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(document.activeElement).toBe(button);
+    item.dispatchEvent(new Event('animationend'));
+    expect(item.classList.contains('is-updated')).toBe(false);
+  });
+
+  it('updates an expired warning label even when its availability state and signature do not change', async () => {
+    vi.useFakeTimers(); dashboard();
+    await refresh(catalog([shared('offline', { availability: { ...checked(20), status: 'offline' } })]));
+    const item = row('offline');
+    const signature = item.dataset.signature;
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Offline');
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(item.dataset.signature).toBe(signature);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Check expired');
+    expect(item.querySelector('.mkt-inline__status')!.textContent).toBe(' · Check expired');
+    expect(availabilityDetail(item)).toBe('Check expired · open');
+  });
+
+  it('rechecks the model future boundary and a backward wall-clock jump without a fetch', async () => {
+    vi.useFakeTimers(); dashboard();
+    const epoch = Date.now();
+    await refresh(catalog([shared('future', { availability: { ...checked(120), lastCheckedAt: epoch / 1000 + 61 } })]));
+    toggle('ready').click();
+    const item = row('future');
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Availability not confirmed');
+    expect(item.hidden).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Recently checked');
+    expect(item.hidden).toBe(false);
+    expect(field('recentServices')).toBe('1');
+    vi.setSystemTime(epoch - 61_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Availability not confirmed');
+    expect(item.hidden).toBe(true);
+    expect(field('recentServices')).toBe('0');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('expires from current wall time after a forward jump and keeps the snapshot flash baseline current', async () => {
+    vi.useFakeTimers(); dashboard();
+    const epoch = Date.now();
+    const body = catalog([shared('expiring', { availability: checked(20) })]);
+    await refresh(body);
+    vi.setSystemTime(epoch + 20_000);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect($('.service-availability').textContent).toBe('Check expired');
+    expect(fetch).toHaveBeenCalledTimes(1);
+    await respond({ ...body, checkedAt: new Date().toISOString() });
+    expect(row('expiring').classList.contains('is-updated')).toBe(false);
+    expect($('.service-availability').textContent).toBe('Check expired');
+  });
+});
