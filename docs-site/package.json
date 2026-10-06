@@ -30,9 +30,7 @@
     "sharp": "0.35.5"
   },
   "overrides": {
-    "miniflare": {
-      "sharp": "0.35.5"
-    }
+    "sharp": "$sharp"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.0",
