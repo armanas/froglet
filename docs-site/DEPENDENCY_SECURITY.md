@@ -141,3 +141,12 @@ advisory (GHSA-68fv-2mgg-jv7q). The compatible patch was applied from 1.2.1 to 1
 The lockfile comparison confirmed this was the only package-version change.
 It is remediation for that indexed-source-map issue, not for the separately
 tracked cache-library behavior above. The guard was retained throughout.
+
+The final-main publication gate subsequently detected GHSA-wq5f-xc86-pv6w in
+Sharp's prebuilt librsvg dependency, indexed on 6 October 2026. Sharp 0.35.5
+ships patched librsvg 2.63.2. Both the direct website dependency and Miniflare's
+exact transitive Sharp pin are resolved to that patch through a targeted npm
+override. Wrangler remains 4.143.1; no advisory exception is added or widened.
+The regression loads Sharp from both actual resolution paths, checks the native
+library versions, and decodes a controlled SVG through each. This patch does not
+remediate the separately tracked cache-library behavior or change its expiry.
