@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeAll, describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +17,23 @@ import {
 } from '../../../scripts/audit-dependencies.mjs';
 
 const siteRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+
+it('the website and Miniflare actually load the patched Sharp and librsvg binaries', async () => {
+  const require = createRequire(resolve(siteRoot, 'package.json'));
+  const direct = require('sharp');
+  const miniflareRequire = createRequire(require.resolve('miniflare'));
+  const indirect = miniflareRequire('sharp');
+  for (const sharp of [direct, indirect]) {
+    expect(sharp.versions.sharp).toBe('0.35.5');
+    expect(sharp.versions.rsvg).toBe('2.63.2');
+    // Exercise the actual native SVG decoder used by the build/preview tools.
+    const rendered = await sharp(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="#ff0000"/></svg>'))
+      .removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    expect(rendered.info.width).toBe(2);
+    expect(rendered.info.height).toBe(2);
+    expect([...rendered.data]).toEqual([255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0]);
+  }
+});
 const now = new Date('2026-10-03T12:00:00Z');
 const advisory = {
   source: 1240991,

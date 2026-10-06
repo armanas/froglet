@@ -27,7 +27,10 @@
     "qrcode-generator": "2.0.4",
     "rehype-mathjax": "^7.1.0",
     "remark-math": "^6.0.0",
-    "sharp": "^0.35.4"
+    "sharp": "0.35.5"
+  },
+  "overrides": {
+    "sharp": "$sharp"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.0",

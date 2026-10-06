@@ -199,11 +199,22 @@ pub fn merge(target: &str, before: &[u8], generated: &[u8]) -> Result<Vec<u8>, C
     }
 }
 
-/// Advisory locks release on process exit. Keep the lock inode in place: unlinking
-/// it would allow a third writer to acquire a different inode while a waiter owns it.
+/// Release the advisory lock at the owner's lifetime boundary. Keep its inode in
+/// place: unlinking could let a third writer acquire a different inode.
 pub(crate) struct MetadataLock {
     _file: fs::File,
 }
+
+impl Drop for MetadataLock {
+    fn drop(&mut self) {
+        // A process spawned on another thread may retain this open file
+        // description until exec. Release the advisory lock when its owner
+        // finishes, rather than waiting for every incidental descriptor copy.
+        // The stable inode remains in place for concurrent writers.
+        let _ = self._file.unlock();
+    }
+}
+
 pub(crate) fn lock_metadata(path: &Path) -> Result<MetadataLock, CliError> {
     let mut options = fs::OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -385,6 +396,25 @@ mod tests {
             Some("froglet-node")
         );
     }
+    #[test]
+    fn metadata_lock_release_is_not_extended_by_a_copied_descriptor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("metadata.lock");
+        let first = lock_metadata(&path).unwrap();
+        // An unrelated process spawned on another thread can retain this open
+        // file description between fork and exec. A clone models that lifetime
+        // deterministically without forking the multithreaded test process.
+        let inherited = first._file.try_clone().unwrap();
+        assert!(lock_metadata(&path).is_err());
+        drop(first);
+        let second = lock_metadata(&path).expect("the owner finished its operation");
+        assert!(lock_metadata(&path).is_err());
+        drop(second);
+        drop(inherited);
+        assert!(path.is_file(), "the stable lock inode must be retained");
+        let _third = lock_metadata(&path).unwrap();
+    }
+
     #[test]
     fn rollback_restores_only_our_write() {
         let dir = tempfile::tempdir().unwrap();
