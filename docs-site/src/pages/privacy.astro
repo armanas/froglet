@@ -7,7 +7,7 @@ import SiteFooter from '../components/SiteFooter.astro';
 import FontPreload from '../components/FontPreload.astro';
 import ThemeProvider from '../components/ThemeProvider.astro';
 
-const UPDATED = 'April 29, 2026';
+const UPDATED = 'October 6, 2026';
 ---
 <html lang="en">
 <head>
@@ -70,12 +70,16 @@ const UPDATED = 'April 29, 2026';
       </article>
       <article class="entry-card">
         <div class="entry-num">02 · hosted proof</div>
-        <h3>Anonymous demo sessions</h3>
+        <h3>Public beta jobs</h3>
         <p>
-          <code class="inline">try.froglet.dev</code> can mint short-lived
-          anonymous sessions and write demo descriptor, offer, deal, and
-          receipt artifacts for public free <code class="inline">demo.*</code>
-          services. Those artifacts are proof material, not private storage.
+          The public beta at <code class="inline">froglet.dev/services/</code>
+          sends your program bytes and input through Cloudflare to a Froglet provider
+          hosted on Fly. The provider stores job records, results and signed artifacts.
+          Use public examples only. Your browser keeps the signed request in session
+          storage for recovery; its temporary private signing seed is not saved or
+          included in the exported exchange. Discarding a browser reference does not
+          delete server records. The older <code class="inline">try.froglet.dev</code>
+          session gateway is a separate legacy demo.
         </p>
       </article>
       <article class="entry-card">

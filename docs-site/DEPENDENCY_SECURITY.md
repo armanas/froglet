@@ -115,3 +115,29 @@ of automatically broadening the review. The historical advisory allowlist is
 unchanged: changed advisory identity, range, severity, or dependency effects
 remain blocking; a clean raw audit cannot disable the separate application
 review.
+
+
+### 6 October 2026 public-demo transport review
+
+The static website now imports a fixed-provider public-demo transport into the
+custom Worker. The new route accepts only free pure-Wasm jobs and the selected
+synthetic catalog, caps request and response bytes, refuses redirects and other
+runtimes, and uses the edge rate-limit binding. It forwards no caller credentials
+or cookies and sets every API response to `no-store`. The browser signing key
+stays in the browser; operator/runtime routes are not exposed.
+
+Eight route-boundary tests, twelve ingress/accounting fixtures, six real-node
+client tests, and five actual released-Linux HTTPS canaries were run. The actual
+Wrangler source map matches all thirteen imported sources. No additional package
+or affected cache-policy code entered the Worker. The configuration, changed
+Worker source, two new sources, and complete normalized bundle are rebound to
+their reviewed bytes. Every existing rejection and registry check remains.
+
+This is an application-source/configuration review, not remediation of the
+disputed library behavior. The existing expiry of 17 October 2026 remains.
+
+The guarded publication found a newly reviewed high-severity source-map-js
+advisory (GHSA-68fv-2mgg-jv7q). The compatible patch was applied from 1.2.1 to 1.2.2.
+The lockfile comparison confirmed this was the only package-version change.
+It is remediation for that indexed-source-map issue, not for the separately
+tracked cache-library behavior above. The guard was retained throughout.

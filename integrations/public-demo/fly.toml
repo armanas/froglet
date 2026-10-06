@@ -1,0 +1,35 @@
+app = "froglet-public-beta-20261006"
+primary_region = "ams"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[env]
+  FROGLET_PUBLIC_BASE_URL = "https://froglet-public-beta-20261006.fly.dev"
+
+[http_service]
+  internal_port = 8088
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 8
+    hard_limit = 16
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[mounts]]
+  source = "froglet_beta_state"
+  destination = "/state"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 512

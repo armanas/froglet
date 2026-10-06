@@ -4,8 +4,9 @@ import { serviceReference, sharedService } from './data/shared-service';
 import { resolveServiceLink, restoreServiceLinkCache } from './data/service-link';
 import { renderServiceLinkHtml, renderServiceLinkMarkdown } from './data/service-link-page';
 import { verifyServiceLinkEvidence } from './data/service-link-verifier';
+import { publicDemoResponse, type PublicDemoEnv } from './data/public-demo-proxy';
 
-interface WorkerEnv {
+interface WorkerEnv extends PublicDemoEnv {
 	ASSETS: {
 		fetch(request: Request): Promise<Response>;
 	};
@@ -22,6 +23,8 @@ const jsonHeaders = {
 
 export default {
 	async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+		const demo = await publicDemoResponse(request, env);
+		if (demo) return demo;
 		const url = new URL(request.url);
 		if (url.pathname === '/service' || url.pathname === '/service/') {
 			const providers = url.searchParams.getAll('provider');

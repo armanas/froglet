@@ -3,20 +3,43 @@
   "name": "froglet-docs",
   "main": "./src/worker.ts",
   "compatibility_date": "2026-04-22",
-  "vars": { "FROGLET_SITE_ORIGIN": "https://froglet.dev" },
+  "vars": {
+    "FROGLET_SITE_ORIGIN": "https://froglet.dev",
+    "FROGLET_PUBLIC_DEMO_ENABLED": "true",
+    "FROGLET_PUBLIC_DEMO_PROVIDER_ID": "c7a15140cc28833978197bdef7daf30e419502f186f59ff88584f453531ea894",
+    "FROGLET_PUBLIC_DEMO_ORIGIN": "https://froglet-public-beta-20261006.fly.dev"
+  },
   "kv_namespaces": [
-    { "binding": "SERVICE_LINK_CACHE", "id": "30c8ba54807649d6b4042a11e4f105f2" }
+    {
+      "binding": "SERVICE_LINK_CACHE",
+      "id": "30c8ba54807649d6b4042a11e4f105f2"
+    }
   ],
   "assets": {
     "binding": "ASSETS",
     "directory": "./dist",
     "not_found_handling": "404-page",
-    "run_worker_first": ["/api/*", "/s/*", "/service", "/service/*"]
+    "run_worker_first": [
+      "/api/*",
+      "/s/*",
+      "/service",
+      "/service/*"
+    ]
   },
   "routes": [
     {
       "pattern": "froglet.dev",
       "custom_domain": true
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "PUBLIC_DEMO_RATE_LIMITER",
+      "namespace_id": "2026100601",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
     }
   ]
 }

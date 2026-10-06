@@ -162,12 +162,12 @@ describe('hosted trial docs copy', () => {
     }
   });
 
-  it('does not promote the unavailable hosted demo as a working homepage proof', () => {
+  it('does not confuse the public bounded beta with the legacy five-service proof', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
     const developers = readRepoFile('docs-site/src/pages/open-source.astro');
     expect(index).not.toContain('proof-strip');
     expect(index).not.toContain('5 free demos');
-    expect(developers).toContain('hosted live demo is temporarily unavailable');
+    expect(developers).toContain('runs supplied Wasm programs and a synthetic catalog without installation or an invitation');
     expect(index).not.toContain('500 sats');
     expect(index).not.toContain('600 sats');
     expect(index).not.toContain('paid ·');

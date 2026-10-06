@@ -243,6 +243,7 @@ python3 -W error -m unittest \
   python.tests.test_gitleaks_gate \
   python.tests.test_release_gate \
   python.tests.test_release_metadata \
+  python.tests.test_public_demo_proxy \
   python.tests.test_fly_provider_smoke \
   python.tests.test_setup_scripts \
   python.tests.test_package_demo_bundle \

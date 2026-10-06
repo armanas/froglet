@@ -206,6 +206,7 @@ jobs:
         env:
           FROGLET_PLAYGROUND_REAL_PROVIDER: '1'
           FROGLET_PLAYGROUND_REAL_REQUESTER: '1'
+          FROGLET_PUBLIC_DEMO_REAL_NODE: '1'
           FROGLET_NODE_BIN: ${{ github.workspace }}/target/debug/froglet-node
         run: npm test --prefix docs-site
 

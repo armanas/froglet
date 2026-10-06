@@ -33,7 +33,7 @@ describe('homepage requirements line', () => {
   it('is a named group with list semantics for assistive technology', () => {
     const labelId = /class="story-needs" role="group" aria-labelledby="([^"]+)"/.exec(home)?.[1];
     expect(labelId).toBeTruthy();
-    expect(home).toContain(`id="${labelId}">Today you’ll need</span>`);
+    expect(home).toContain(`id="${labelId}">To publish your own service</span>`);
     // list-style: none removes list semantics in some browsers unless the role is explicit
     expect(home).toMatch(/<div class="story-needs"[\s\S]*?<ul role="list">/);
   });
@@ -66,7 +66,7 @@ describe('homepage requirements line', () => {
   });
 
   it('keeps the beta status note above the requirements', () => {
-    expect(home.indexOf('Public beta · Start with a free service on your own computer.')).toBeLessThan(
+    expect(home.indexOf('Public beta · Try it in your browser without signup or installation.')).toBeLessThan(
       home.indexOf('class="story-needs"'),
     );
   });
