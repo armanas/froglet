@@ -238,7 +238,7 @@ run_security() {
   fi
 
   if has_cargo; then
-    step cargo test crypto::tests || rc=1
+    step cargo test -p froglet-protocol crypto::tests || rc=1
   else
     skip_warn "cargo not found"
   fi
@@ -561,7 +561,7 @@ run_sanity() {
   local rc=0
 
   if has_cargo; then
-    step cargo test --lib -- --test-threads=1 crypto::tests || rc=1
+    step cargo test -p froglet-protocol --lib -- --test-threads=1 crypto::tests || rc=1
   else
     skip_warn "cargo not found"
   fi
