@@ -217,6 +217,90 @@ class PublicDemoHttpTests(unittest.TestCase):
         self.native.assert_not_called()
         self.assertEqual(self.usage(), (0, 0))
 
+    def publication_fixture(self):
+        descriptor = {'cursor': 3, 'hash': 'd' * 64, 'kind': 'descriptor',
+                      'actor_id': PROVIDER, 'document': {'artifact_type': 'descriptor',
+                      'hash': 'd' * 64, 'payload': {'provider_id': PROVIDER}}}
+        offer = {'cursor': 7, 'hash': 'e' * 64, 'kind': 'offer',
+                 'actor_id': PROVIDER, 'document': {'artifact_type': 'offer',
+                 'hash': 'e' * 64, 'payload': {'provider_id': PROVIDER,
+                 'offer_id': demo.CATALOG, 'descriptor_hash': 'd' * 64}}}
+        revision = {'revision_hash': 'f' * 64, 'payload': {'offer_hash': 'e' * 64}}
+        starter = {'op': 'select', 'collection': 'terminology',
+                   'columns': ['source', 'target'], 'limit': 100}
+
+        def respond(method, path, body=None):
+            values = {
+                '/v1/provider/offers': {'offers': [offer['document'],
+                    {'artifact_type': 'offer', 'hash': '9' * 64,
+                     'payload': {'offer_id': 'events.query'}}]},
+                '/v1/artifacts/' + 'e' * 64: offer,
+                '/v1/artifacts/' + 'd' * 64: descriptor,
+                '/v1/provider/services/' + demo.CATALOG:
+                    {'publication_revision': revision,
+                     'service': {'starter': json.dumps(starter)}},
+            }
+            if method == 'POST':
+                return 200, demo.encoded({'signed_canary': True})
+            return 200, demo.encoded(values[path])
+        self.native.side_effect = respond
+        return descriptor, offer, revision, starter
+
+    def test_discovery_feed_keeps_native_cursors_and_never_reads_visitor_feed(self):
+        descriptor, offer, _, _ = self.publication_fixture()
+        status, _, raw = self.request('/v1/feed?limit=1&cursor=0')
+        self.assertEqual(status, 200)
+        feed = json.loads(raw)
+        self.assertEqual(feed['artifacts'], [descriptor])
+        self.assertEqual(feed['active_offer_hashes'], [offer['hash']])
+        self.assertTrue(feed['has_more'])
+        self.assertEqual(feed['next_cursor'], 3)
+        status, _, raw = self.request('/v1/feed?cursor=3&limit=100')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)['artifacts'], [offer])
+        self.assertFalse(json.loads(raw)['has_more'])
+        status, _, raw = self.request('/v1/feed?cursor=7&limit=100')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(raw)['artifacts'], [])
+        self.assertTrue(all(not call.args[1].startswith('/v1/feed') for call in self.native.call_args_list))
+
+    def test_discovery_cannot_fetch_receipts_or_expand_feed_queries(self):
+        self.publication_fixture()
+        self.assertEqual(self.request('/v1/artifacts/' + '1' * 64)[0], 404)
+        self.assertFalse(any(call.args[1].endswith('1' * 64) for call in self.native.call_args_list))
+        self.native.reset_mock()
+        for path in ('/v1/feed?limit=0', '/v1/feed?cursor=-1',
+                     '/v1/feed?limit=101', '/v1/feed?limit=1&limit=2',
+                     '/v1/feed?cursor=1&owner_token=x', '/v1/feed?cursor=%31'):
+            self.assertEqual(self.request(path)[0], 404)
+        self.native.assert_not_called()
+
+    def test_publication_canary_only_for_current_catalog_exact_fixture(self):
+        _, offer, revision, starter = self.publication_fixture()
+        path = '/v1/publications/' + revision['revision_hash'] + '/canary'
+        body = {'schema_version': 'froglet.publication-canary-request.v1',
+                'revision_hash': revision['revision_hash'], 'offer_hash': offer['hash'],
+                'challenge': 'b' * 64, 'input': starter}
+        self.assertEqual(self.request(path, json.dumps(body), method='POST',
+                                    headers={'Content-Type': 'application/json'})[0], 200)
+        self.assertEqual(self.native.call_args.args[:2], ('POST', path))
+        for field, value in (('input', {'op': 'describe'}), ('offer_hash', '9' * 64),
+                             ('challenge', 'invalid'), ('owner_token', 'never-forward')):
+            invalid = dict(body, **{field: value})
+            self.native.reset_mock()
+            self.assertEqual(self.request(path, json.dumps(invalid), method='POST',
+                                         headers={'Content-Type': 'application/json'})[0], 400)
+            self.assertFalse(any(call.args[0] == 'POST' for call in self.native.call_args_list))
+
+    def test_metadata_traffic_reserves_smaller_enforced_response_ceiling(self):
+        self.publication_fixture()
+        status, _, _ = self.request('/v1/feed?limit=100')
+        self.assertEqual(status, 200)
+        self.assertEqual(self.usage(), (1, demo.MAX_METADATA_RESPONSE))
+        self.native.side_effect = None
+        self.native.return_value = 200, demo.encoded({'data': 'x' * demo.MAX_METADATA_RESPONSE})
+        self.assertEqual(self.request('/v1/node/capabilities')[0], 503)
+
     def test_malformed_utf8_json_unsafe_numbers_and_deep_bodies_do_not_reach_native(self):
         deep = quote_request()
         nested = 0

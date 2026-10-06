@@ -12,6 +12,7 @@ import {
 	offerTitle,
 	priceLabel,
 	priceSortKey,
+	publicDemoLink,
 	serviceAvailability,
 	type Category,
 } from './marketplace-model';
@@ -108,11 +109,17 @@ function buildDetail(offer: MarketplaceOfferSummary, ctx: RenderContext, id: str
 
 	const side = h('div', 'mkt-detail__side');
 	const links: Array<[string, string]> = [];
+	const demoLink = publicDemoLink(offer);
+	if (demoLink) links.push(['Try it', demoLink]);
 	if (link) links.push([`Open ${title}`, link], ['Share / QR', `${link}#share`]);
 	links.push(['How offers work', '/marketplace/overview/'], ['Verify a receipt', '/verify-receipt/']);
 	for (const [label, href] of links) {
 		const anchor = h('a', '', label);
 		anchor.setAttribute('href', href);
+		if (href === demoLink) {
+			anchor.dataset.marketplacePublicDemo = '';
+			anchor.setAttribute('aria-label', `Try ${title} in the public beta`);
+		}
 		side.append(anchor);
 	}
 
@@ -137,6 +144,7 @@ function buildItem(offer: MarketplaceOfferSummary, ctx: RenderContext): HTMLTabl
 	const provider = ctx.providers.get(offer.providerId);
 	const providerText = provider?.endpoint ? displayEndpoint(provider.endpoint) : compactId(offer.providerId);
 	const link = hasShareLink(offer) ? offer.sharePath! : '';
+	const demoLink = publicDemoLink(offer);
 	const price = priceLabel(offer);
 	const detailId = `mkt-detail-${++itemCounter}`;
 
@@ -168,6 +176,7 @@ function buildItem(offer: MarketplaceOfferSummary, ctx: RenderContext): HTMLTabl
 	byline.title = offer.providerId;
 	namebox.append(byline);
 	namebox.append(h('span', 'mkt-sub', description));
+	if (demoLink) namebox.append(h('span', 'mkt-note', 'Public beta. No invitation; free jobs share a finite allowance. The demo checks admission when you run.'));
 	if (offer.availability?.admission === 'invitation_required') {
 		namebox.append(h('span', 'mkt-note', 'Invitation required. Listing checks metadata only; execution has not been tested by the marketplace.'));
 	}
@@ -207,6 +216,13 @@ function buildItem(offer: MarketplaceOfferSummary, ctx: RenderContext): HTMLTabl
 
 	const action = h('td', 'mkt-col-action');
 	const actions = h('div', 'mkt-actions');
+	if (demoLink) {
+		const tryIt = h('a', 'service-open mkt-pill mkt-pill--primary', 'Try it');
+		tryIt.setAttribute('href', demoLink);
+		tryIt.setAttribute('aria-label', `Try ${title} in the public beta`);
+		tryIt.dataset.marketplacePublicDemo = '';
+		actions.append(tryIt);
+	}
 	if (link) {
 		const open = h('a', 'service-open mkt-pill mkt-pill--primary', 'Open');
 		open.setAttribute('href', link);
@@ -717,12 +733,12 @@ export function initMarketplaceLive(): void {
 	function state(status: 'live' | 'stale' | 'unavailable', detail?: string) {
 		root!.dataset.status = status;
 		setText(root!, '[data-marketplace-field="message"]', status === 'live'
-			? 'Catalog updated. Open a service to see what it does.'
+			? 'Catalog updated. This confirms the index loaded, not that every service is available.'
 			: status === 'stale'
 				? 'Showing an earlier catalog. Availability may have changed; we are checking again.'
 				: 'We could not load the catalog. We will try again automatically.');
 		const badge = document.querySelector<HTMLElement>('[data-marketplace-field="refresh"]');
-		if (badge) { badge.textContent = status === 'live' ? 'LIVE' : status.toUpperCase(); badge.dataset.status = status; }
+		if (badge) { badge.textContent = status === 'live' ? 'Catalog updated' : status.toUpperCase(); badge.dataset.status = status; }
 		if (lastSnapshot) {
 			if (renderedStale !== (status !== 'live')) { renderedStale = status !== 'live'; renderServiceList(root!, lastSnapshot, renderedStale, false); }
 			applySearch();

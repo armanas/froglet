@@ -47,6 +47,22 @@ describe('Explore services page', () => {
     expect(page).toContain('Receipts are provider statements, not independently assessed quality or unique buyers.');
     expect(page).toContain('Catalog counts do not measure customer activity.');
     expect(page).toContain('has not expired');
+    expect(page).toContain('a listing or a free price does not grant access');
+    expect(page).toContain('not that every service can run');
+  });
+
+  it('keeps the public beta and unconfirmed-listing explanation visible on small screens', () => {
+    expect(page).toMatch(/<p class="mkt-explanation"><a href="\/services\/#try-it">Try the public beta/);
+    expect(page).toMatch(/<p class="mkt-explanation">“Availability not confirmed”/);
+    const start = css.indexOf('@media (max-width: 640px)');
+    expect(start).toBeGreaterThan(-1);
+    const collapsed = css.slice(start);
+    expect(collapsed).not.toMatch(/\.mkt-explanation[^{}]*\{[^}]*clip:/);
+    const demo = read('pages/services.astro');
+    expect(demo).toContain('id="try-it"');
+    expect(demo).toContain('data-run-program');
+    expect(demo).toContain('data-run-query');
+    expect(demo).toContain('No invitation');
   });
 
   it('links its evidence sources and the receipt verifier', () => {

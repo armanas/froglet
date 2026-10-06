@@ -64,6 +64,29 @@ key. Discarding a browser reference does not cancel remote work or replenish an
 allowance. Missing existing state fails closed. Never recreate a database or
 restore an older usage ledger to make capacity available again.
 
+## Marketplace discovery
+
+The ingress exposes `/v1/node/capabilities`, a selected `/v1/feed`, and exact
+`/v1/artifacts/{hash}` reads for the active synthetic catalog's signed offer and
+its bound descriptor. It preserves the native ledger cursors and documents;
+visitor quotes, deals and receipts never enter this discovery feed. Unknown
+hashes and malformed, repeated or out-of-range feed queries are refused.
+Discovery responses have a 32 KiB ceiling and reserve that ceiling in the same
+persistent traffic ledger; prior reservations remain spent. Other demo requests
+retain their existing response reservation.
+
+`POST /v1/publications/{revision}/canary` accepts only the current synthetic
+catalog revision, exact offer and immutable public verification input with a
+fresh challenge. The unchanged native node signs the response and charges its
+finite execution allowance. This is an execution check, not a health badge.
+
+Submit the signed revision and its bound canary input through the marketplace's
+exact registration path. Direct HTTPS candidates require operator review.
+Registration submission alone does not establish activation or health: confirm
+the exact indexed offer and a healthy, unexpired lease, then observe the lease
+renewing after another successful indexer poll. Marketplace reachability checks
+and the public portal's execution checks are separate evidence.
+
 `operator_backup.py` makes SQLite online backups and isolated restored copies on
 the same private volume. It verifies integrity, schemas and row digests, never
 restores production and never exports credentials or databases. Individual DB

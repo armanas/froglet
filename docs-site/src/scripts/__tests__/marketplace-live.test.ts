@@ -6,6 +6,8 @@ vi.mock('../../data/service-link-verifier', () => ({ verifyServiceLinkEvidence: 
 import { initMarketplaceLive, serviceAvailability } from '../marketplace-live';
 import { getMarketplaceSnapshot } from '../../data/live-snapshot';
 import worker from '../../worker';
+import { PUBLIC_DEMO } from '../../data/public-demo-config';
+import { publicDemoLink } from '../marketplace-model';
 
 // The dashboard's real markup, so these tests fail if the page and the script drift apart.
 const pageSource = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../pages/marketplace.astro'), 'utf8');
@@ -91,7 +93,7 @@ describe('marketplace runtime status', () => {
   });
   it('marks a successful snapshot stale when the next request fails', async () => {
     vi.useFakeTimers(); page(); await refresh(snapshot({ providerCount: 3 }));
-    expect(document.querySelector('[data-marketplace-field="refresh"]')?.textContent).toBe('LIVE');
+    expect(document.querySelector('[data-marketplace-field="refresh"]')?.textContent).toBe('Catalog updated');
     vi.mocked(fetch).mockRejectedValue(new Error('network offline'));
     await vi.advanceTimersByTimeAsync(30_000);
     expect(document.querySelector('[data-marketplace-field="refresh"]')?.textContent).toBe('STALE');
@@ -141,16 +143,16 @@ describe('the live dashboard header', () => {
     expect(count()).toBe('Loading');
   });
 
-  it('shows LIVE with the totals, sample sizes and a plain-language message', async () => {
+  it('shows a catalog-only confirmation with totals, sample sizes and a plain-language message', async () => {
     vi.useFakeTimers(); dashboard();
     await refresh(snapshot({
       providerCount: 5, offerCount: 30,
       providers: [{ providerId: provider, descriptorHash: 'd'.repeat(64), serviceKinds: ['compute'], executionRuntimes: [], endpoint: 'https://node.example.dev', successCount: 9, failureCount: 1, totalSettledMsat: 12_000, lastReceiptFinishedAt: 1 }],
       offers: [listing({ offerId: 'a' }), priced('b'), listing({ offerId: 'c', pricingKnown: false })],
     }));
-    expect($('[data-marketplace-field="refresh"]').textContent).toBe('LIVE');
+    expect($('[data-marketplace-field="refresh"]').textContent).toBe('Catalog updated');
     expect($('[data-marketplace-field="refresh"]').dataset.status).toBe('live');
-    expect(field('message')).toBe('Catalog updated. Open a service to see what it does.');
+    expect(field('message')).toBe('Catalog updated. This confirms the index loaded, not that every service is available.');
     expect(field('froglets')).toBe('5');
     expect(field('offers')).toBe('30');
     expect(field('freeOffers')).toBe('1');
@@ -209,6 +211,49 @@ describe('the live dashboard header', () => {
 });
 
 describe('service listing', () => {
+  it('maps the captured read-API inline-module compute shape through snapshot normalization', async () => {
+    // /v1/offers?limit=24 observed 2026-10-06: compute.wasm.v1 uses inline_module,
+    // not a package named wasm. Substitute only the demo identity for this mapping check.
+    const rawOffer = {
+      provider_id: PUBLIC_DEMO.providerId, offer_id: 'execute.compute', offer_kind: 'compute.wasm.v1',
+      runtime: 'wasm', package_kind: 'inline_module', settlement_method: 'none',
+      base_fee_msat: 0, success_fee_msat: 0,
+      artifact_hash: '09f550aaff71b039d8ae58504740d5847ed24074b70b74d766931789a614d501',
+      availability: { admission: 'unknown', status: 'unknown', lease_expires_at: null, last_renewed_at: null },
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/healthz') ? { status: 'ok' } : url.includes('/v1/offers?') ? { items: [rawOffer] } : { items: [] }
+    ))));
+    const result = await getMarketplaceSnapshot();
+    expect(result.status).toBe('pass');
+    expect(result.offers[0].packageKind).toBe('inline_module');
+    expect(publicDemoLink(result.offers[0])).toBe('/services/#try-it');
+    expect(serviceAvailability(result.offers[0]).ready).toBe(false);
+  });
+
+  it('links only the exact free public beta offers to the anonymous demo without inventing health checks', async () => {
+    vi.useFakeTimers(); dashboard();
+    const compute = { providerId: PUBLIC_DEMO.providerId, offerId: PUBLIC_DEMO.computeOffer, offerKind: 'compute.wasm.v1', runtime: 'wasm', packageKind: 'inline_module' };
+    const query = { providerId: PUBLIC_DEMO.providerId, offerId: PUBLIC_DEMO.catalogService, offerKind: PUBLIC_DEMO.catalogService, runtime: 'builtin', packageKind: 'builtin' };
+    await refresh(catalog([
+      listing(compute), listing(query),
+      listing({ ...compute, providerId: provider }),
+      listing({ ...compute, offerId: 'execute.compute.generic' }),
+      listing({ ...compute, settlementMethod: 'lightning', baseFeeMsat: 1 }),
+    ]));
+    const links = Array.from(document.querySelectorAll<HTMLAnchorElement>('[data-marketplace-public-demo]'));
+    expect(links).toHaveLength(4); // Main action and its details drawer for each exact offer.
+    for (const link of links) {
+      expect(link.getAttribute('href')).toBe('/services/#try-it');
+      expect(link.textContent).toBe('Try it');
+      expect(link.closest('.mkt-item')!.textContent).toContain('No invitation');
+    }
+    expect(items()).toHaveLength(5);
+    expect(items().every(item => item.dataset.ready === 'false')).toBe(true);
+    expect(Array.from(document.querySelectorAll('.service-availability')).every(badge => badge.textContent === 'Availability not confirmed')).toBe(true);
+    expect(field('recentServices')).toBe('0');
+  });
+
   it('draws one row per offer with an icon, title, type, price, availability and byline', async () => {
     vi.useFakeTimers(); dashboard();
     await refresh(catalog([
@@ -427,7 +472,7 @@ describe('browsing, searching and filtering', () => {
     expect(count()).toBe('1 service');
     await vi.advanceTimersByTimeAsync(30_000);
     expect($('.service-availability').textContent).toBe('Check expired');
-    expect($('[data-marketplace-field="refresh"]').textContent).toBe('LIVE');
+    expect($('[data-marketplace-field="refresh"]').textContent).toBe('Catalog updated');
     expect(shown()).toEqual([]);
     expect(count()).toBe('0 services');
     expect($('[data-marketplace-no-results]').hidden).toBe(false);
@@ -460,7 +505,7 @@ describe('freshness and failure', () => {
     expect(names()).toEqual(['HLA Catalog']);
 
     await respond(body());
-    expect($('[data-marketplace-field="refresh"]').textContent).toBe('LIVE');
+    expect($('[data-marketplace-field="refresh"]').textContent).toBe('Catalog updated');
     expect($('.service-availability').textContent).toBe('Recently checked');
     expect(field('recentServices')).toBe('1');
   });
@@ -486,7 +531,7 @@ describe('freshness and failure', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(banner.hidden).toBe(true);
     expect(names()).toEqual(['HLA Catalog']);
-    expect($('[data-marketplace-field="refresh"]').textContent).toBe('LIVE');
+    expect($('[data-marketplace-field="refresh"]').textContent).toBe('Catalog updated');
   });
 
   it('invites people to share a service when nothing is shared, and steps aside when something is', async () => {

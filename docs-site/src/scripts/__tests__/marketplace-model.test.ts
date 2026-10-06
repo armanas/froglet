@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MarketplaceOfferSummary } from '../../data/live-snapshot';
+import { PUBLIC_DEMO } from '../../data/public-demo-config';
 import {
   CATEGORY_LABELS,
   CATEGORY_ORDER,
@@ -13,6 +14,7 @@ import {
   offerTitle,
   priceLabel,
   priceSortKey,
+  publicDemoLink,
   serviceAvailability,
 } from '../marketplace-model';
 
@@ -49,6 +51,25 @@ describe('share links', () => {
   ])('rejects %s', (_label, sharePath) => {
     expect(hasShareLink(offer({ sharePath }))).toBe(false);
     expect(categoryOf(offer({ sharePath }))).toBe('other');
+  });
+});
+
+describe('public beta actions', () => {
+  const compute = () => offer({ providerId: PUBLIC_DEMO.providerId, offerId: PUBLIC_DEMO.computeOffer, offerKind: 'compute.wasm.v1', runtime: 'wasm', packageKind: 'inline_module' });
+
+  it('maps only the supplied program and selected catalog operations to the existing anonymous demo', () => {
+    expect(publicDemoLink(compute())).toBe('/services/#try-it');
+    expect(publicDemoLink(offer({ providerId: PUBLIC_DEMO.providerId, offerId: PUBLIC_DEMO.catalogService, offerKind: PUBLIC_DEMO.catalogService, runtime: 'builtin', packageKind: 'builtin' }))).toBe('/services/#try-it');
+    expect(serviceAvailability(compute()).ready).toBe(false);
+  });
+
+  it.each([
+    { providerId: provider }, { offerId: 'execute.compute.generic' },
+    { offerKind: 'compute.execution.v1' }, { runtime: 'container' }, { packageKind: 'oci' }, { packageKind: 'wasm' },
+    { settlementMethod: 'lightning' }, { baseFeeMsat: 1 }, { successFeeMsat: 1 }, { pricingKnown: false },
+    { availability: { admission: 'invitation_required', status: 'healthy', lastCheckedAt: 100, leaseExpiresAt: 200 } },
+  ])('refuses a different identity, workload or access policy: %j', change => {
+    expect(publicDemoLink({ ...compute(), ...change })).toBeUndefined();
   });
 });
 

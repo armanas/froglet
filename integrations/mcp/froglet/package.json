@@ -15,7 +15,7 @@
     "froglet-mcp": "./server.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1"
+    "@modelcontextprotocol/sdk": "^1.31.0"
   },
   "overrides": {
     "hono": "4.13.9",
