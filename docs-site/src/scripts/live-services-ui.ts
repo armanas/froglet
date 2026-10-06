@@ -78,7 +78,9 @@ export function startLiveServices(scope: ParentNode = document): void {
     one<HTMLElement>('[data-program-commitment]').textContent = run.request.kind === 'wasm' ? `Program SHA-256: ${run.request.submission.workload.module_hash}` : 'The lookup used Bob’s published synthetic snapshot.';
     pending = undefined;
     try { sessionStorage.removeItem(STORAGE); } catch { /* No saved credential is involved. */ }
-    one<HTMLElement>('[data-recovery-note]').textContent = 'The browser checked the signatures and the result commitment. This is evidence of Bob’s report, not scientific validation.';
+    one<HTMLElement>('[data-recovery-note]').textContent = outcome.status === 'succeeded'
+      ? 'The browser checked the signatures and the result commitment. This is evidence of Bob’s report, not scientific validation.'
+      : 'The browser checked the signatures and the signed failure receipt. This verifies Bob’s failure report.';
     await updateCapacity();
   }
 
@@ -92,6 +94,7 @@ export function startLiveServices(scope: ParentNode = document): void {
     one<HTMLDetailsElement>('[data-exchange-export]').hidden = true;
     one<HTMLTextAreaElement>('[data-exchange-json]').value = '';
     one<HTMLElement>('[data-program-commitment]').textContent = '';
+    one<HTMLElement>('[data-recovery-note]').textContent = '';
     try {
       let module: Uint8Array | undefined;
       let text: string;

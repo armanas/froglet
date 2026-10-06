@@ -48,6 +48,7 @@ afterEach(() => {
 test('browser Back restores working handlers and preserves the visitor’s edited program and input', async () => {
   $<HTMLButtonElement>('[data-run-program]').click();
   await result();
+  expect($('[data-recovery-note]').textContent).toContain('the result commitment');
   $<HTMLTextAreaElement>('[data-program-source]').value = 'visitor-edited-program';
   $<HTMLTextAreaElement>('[data-program-input]').value = '{"a":8,"b":9}';
   hide(true);
@@ -55,10 +56,22 @@ test('browser Back restores working handlers and preserves the visitor’s edite
   expect(mocks.dispose).not.toHaveBeenCalled();
   expect($<HTMLTextAreaElement>('[data-program-source]').value).toBe('visitor-edited-program');
   $<HTMLButtonElement>('[data-run-program]').click();
+  expect($('[data-recovery-note]').textContent).toBe('');
   await vi.waitFor(() => expect(mocks.prepare).toHaveBeenCalledTimes(2));
   expect(mocks.compile).toHaveBeenLastCalledWith('visitor-edited-program');
   expect(mocks.prepare.mock.calls[1][1]).toBe('{"a":8,"b":9}');
   await result();
+});
+
+test.each(['execution_limit_exceeded', 'execution_timed_out', 'execution_failed'])('a verified %s failure describes the receipt without claiming a result commitment', async (failure) => {
+  const run = { request: { kind: 'wasm', submission: { workload: { module_hash: 'b'.repeat(64) } } } };
+  mocks.resume.mockResolvedValueOnce({ terminal: true, status: 'failed', failure, run });
+  $<HTMLButtonElement>('[data-run-failure]').click();
+  await vi.waitFor(() => expect($('[data-job-status]').textContent).toContain('Signed failure receipt verified.'));
+  expect($('[data-recovery-note]').textContent).toBe('The browser checked the signatures and the signed failure receipt. This verifies Bob’s failure report.');
+  expect(JSON.parse($('[data-job-result]').textContent!)).toEqual({ status: 'failed', failure });
+  expect($<HTMLButtonElement>('[data-download-receipt]').disabled).toBe(false);
+  expect($<HTMLDetailsElement>('[data-exchange-export]').hidden).toBe(false);
 });
 
 test('a pending signed job remains recoverable after a cached-page round trip', async () => {
