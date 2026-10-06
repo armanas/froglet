@@ -84,3 +84,13 @@ test('a final navigation still disposes the compiler after earlier cached naviga
   $<HTMLButtonElement>('[data-run-program]').click();
   expect(mocks.compile).not.toHaveBeenCalled();
 });
+
+test('the public beta’s local playground link names a real page and section', () => {
+  const dom = new DOMParser().parseFromString(page, 'text/html');
+  const link = Array.from(dom.querySelectorAll('a')).find(a => a.textContent === 'Explore the local playground');
+  expect(link).toBeDefined();
+  const url = new URL(link!.getAttribute('href')!, 'https://froglet.dev');
+  const target = readFileSync(resolve(src, 'pages', url.pathname.split('/').filter(Boolean).join('/') + '.astro'), 'utf8');
+  const targetDom = new DOMParser().parseFromString(target, 'text/html');
+  expect(targetDom.getElementById(url.hash.slice(1))).not.toBeNull();
+});
