@@ -42,7 +42,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1"
+    "@modelcontextprotocol/sdk": "^1.31.0"
   },
   "scripts": {
     "check:mcp": "node --check integrations/mcp/froglet/server.js",
