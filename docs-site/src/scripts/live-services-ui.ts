@@ -54,7 +54,7 @@ export function startLiveServices(scope: ParentNode = document): void {
     try {
       const response = await fetch(PUBLIC_DEMO_PREFIX + '/demo/status', { cache: 'no-store', signal: control.signal });
       const s = await response.json();
-      if (!disposed && response.ok && s.remaining && Number.isSafeInteger(s.remaining.deals)) capacity.textContent = `${s.remaining.deals} jobs left in this shared beta allowance. ${s.paused ? 'New jobs are paused.' : 'A restart does not refill it.'}`;
+      if (!disposed && response.ok && s.remaining && Number.isSafeInteger(s.remaining.deals)) capacity.textContent = `Native allowance: ${s.remaining.deals} job admissions remaining. Shared network limits may stop access sooner. ${s.paused ? 'New jobs are paused.' : 'A restart does not refill allowances.'}`;
     } catch { /* A counter failure must not invent capacity or erase an existing result. */ }
   };
 
