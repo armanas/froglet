@@ -79,6 +79,7 @@ function buildDetail(offer: MarketplaceOfferSummary, ctx: RenderContext, id: str
 		if (!value) return;
 		const wrap = h('div');
 		const dd = h('dd');
+		if (label === 'Availability') dd.dataset.marketplaceAvailability = '';
 		dd.append(h('span', 'mkt-fact-value', value));
 		if (copy) {
 			const button = h('button', 'mkt-mini', 'Copy');
@@ -308,6 +309,33 @@ function renderServiceList(root: HTMLElement, snapshot: MarketplaceSnapshot, sta
 		snapshot.offerCount > snapshot.offers.length
 			? `Showing ${snapshot.offers.length} of ${snapshot.offerCount} indexed offers. Search and filters cover only the offers loaded here.`
 			: `Showing all ${snapshot.offers.length} indexed offer${snapshot.offers.length === 1 ? '' : 's'}.`);
+}
+
+/** Time changes availability without changing the catalog or replacing its open controls. */
+function syncServiceAvailability(root: HTMLElement, snapshot: MarketplaceSnapshot, stale: boolean, now: number): boolean {
+	const items = new Map(Array.from(root.querySelectorAll<HTMLElement>('tbody.mkt-item')).map((item) => [item.dataset.key, item]));
+	let changed = false;
+	let recent = 0;
+	for (const offer of snapshot.offers) {
+		const availability = serviceAvailability(offer, stale, now);
+		if (availability.ready) recent += 1;
+		const key = `${offer.providerId}:${offer.offerId}`;
+		const item = items.get(key);
+		const badge = item?.querySelector<HTMLElement>('.service-availability');
+		if (!item || !badge || (badge.textContent === availability.label && badge.dataset.state === availability.state && item.dataset.ready === String(availability.ready))) continue;
+		changed = true;
+		item.dataset.ready = badge.dataset.ready = String(availability.ready);
+		item.dataset.sortStatus = String(availability.state === 'ready' ? 0 : availability.state === 'unknown' ? 1 : 2);
+		badge.textContent = availability.label;
+		badge.dataset.state = availability.state;
+		setText(item, '.mkt-inline__status', ` · ${availability.label}`);
+		const admission = offer.availability?.admission && offer.availability.admission !== 'unknown' ? ` · ${offer.availability.admission.replaceAll('_', ' ')}` : '';
+		setText(item, '[data-marketplace-availability] .mkt-fact-value', `${availability.label}${admission}`);
+		item.dataset.signature = offerSignature(offer, stale, now);
+		previousSignatures.get(root)?.set(key, item.dataset.signature);
+	}
+	setText(root, '[data-marketplace-field="recentServices"]', recent);
+	return changed;
 }
 
 function renderCategories(root: HTMLElement, offers: MarketplaceOfferSummary[]): void {
@@ -726,9 +754,16 @@ export function initMarketplaceLive(): void {
 	let lastSnapshot: MarketplaceSnapshot | undefined;
 	let refreshing = false;
 	let nextRefreshAt = Date.now() + REFRESH_MS;
-	// Whether the rows on screen were drawn as stale; state() only redraws when that changes,
-	// so the change-flash from a fresh snapshot is not wiped by a second render.
+	// A failed refresh stays stale until a successful snapshot, even while the clock ticks.
 	let renderedStale: boolean | undefined;
+	const syncAvailability = (now = Date.now()) => {
+		if (!lastSnapshot || !syncServiceAvailability(root, lastSnapshot, Boolean(renderedStale), now)) return;
+		const focused = document.activeElement;
+		applySearch();
+		applySort(root);
+		// Moving table sections can blur a control. Do not restore focus to a filtered-out row.
+		if (focused instanceof HTMLElement && focused.isConnected && root.contains(focused) && !focused.closest('[hidden]') && document.activeElement !== focused) focused.focus({ preventScroll: true });
+	};
 
 	function state(status: 'live' | 'stale' | 'unavailable', detail?: string) {
 		root!.dataset.status = status;
@@ -740,7 +775,7 @@ export function initMarketplaceLive(): void {
 		const badge = document.querySelector<HTMLElement>('[data-marketplace-field="refresh"]');
 		if (badge) { badge.textContent = status === 'live' ? 'Catalog updated' : status.toUpperCase(); badge.dataset.status = status; }
 		if (lastSnapshot) {
-			if (renderedStale !== (status !== 'live')) { renderedStale = status !== 'live'; renderServiceList(root!, lastSnapshot, renderedStale, false); }
+			if (renderedStale !== (status !== 'live')) { renderedStale = status !== 'live'; syncAvailability(); }
 			applySearch();
 		}
 		if (detail) setText(root!, '[data-marketplace-field="detail"]', detail);
@@ -823,10 +858,13 @@ export function initMarketplaceLive(): void {
 	});
 	refreshButton?.addEventListener('click', () => void refresh());
 
-	// One-second tick: "Updated Ns ago", the next-check countdown and every row's check age.
+	// One-second tick also expires provider checks while a snapshot request is pending.
 	const tick = () => {
 		const now = Date.now();
-		if (lastSnapshot) setText(root, '[data-marketplace-age]', `Updated ${formatAge(now - Date.parse(lastSnapshot.checkedAt))}`);
+		if (lastSnapshot) {
+			setText(root, '[data-marketplace-age]', `Updated ${formatAge(now - Date.parse(lastSnapshot.checkedAt))}`);
+			syncAvailability(now);
+		}
 		const remaining = Math.max(0, Math.ceil((nextRefreshAt - now) / 1000));
 		setText(root, '[data-marketplace-next]', refreshing ? 'Checking…' : `Next check in ${remaining}s`);
 		for (const time of root.querySelectorAll<HTMLElement>('time[data-since]')) {
