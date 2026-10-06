@@ -1,0 +1,86 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { startLiveServices } from '../live-services-ui';
+import { src } from './route-helpers';
+
+const mocks = vi.hoisted(() => ({
+  compile: vi.fn(), dispose: vi.fn(), prepare: vi.fn(), resume: vi.fn(),
+}));
+vi.mock('../playground/compiler', () => ({
+  browserCompilerWorker: vi.fn(),
+  createCompiler: () => ({ compile: mocks.compile, dispose: mocks.dispose }),
+}));
+vi.mock('../playground/kernel', () => ({
+  loadKernel: async () => ({}), loadPlaygroundVerifier: async () => ({}),
+}));
+vi.mock('../live-service-client', () => ({
+  prepareLiveRun: mocks.prepare, resumeLiveRun: mocks.resume,
+  exportLiveEvidence: (outcome: unknown) => ({ outcome }),
+}));
+
+const page = readFileSync(resolve(src, 'pages/services.astro'), 'utf8');
+const markup = page.slice(page.indexOf('<section class="story-section live-demo"'), page.indexOf('<section class="story-section"><div'));
+const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
+const hide = (persisted: boolean) => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted }));
+const ready = async () => vi.waitFor(() => expect($<HTMLButtonElement>('[data-run-program]').disabled).toBe(false));
+const result = async () => vi.waitFor(() => expect($('[data-job-status]').textContent).toBe('Result received. Signed receipt verified.'));
+
+beforeEach(async () => {
+  vi.clearAllMocks();
+  sessionStorage.clear();
+  document.body.innerHTML = markup;
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ providerId: 'a'.repeat(64), remaining: { deals: 1000 }, paused: false }))));
+  mocks.compile.mockResolvedValue({ ok: true, module: new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]) });
+  const run = { providerId: 'a'.repeat(64), request: { kind: 'wasm', submission: { workload: { module_hash: 'b'.repeat(64) } } } };
+  mocks.prepare.mockImplementation(async (deps: any) => { deps.save(run); return run; });
+  mocks.resume.mockResolvedValue({ terminal: true, status: 'succeeded', result: { sum: 13, product: 42 }, run });
+  startLiveServices();
+  await ready();
+});
+
+afterEach(() => {
+  hide(false);
+  document.body.innerHTML = '';
+  vi.unstubAllGlobals();
+});
+
+test('browser Back restores working handlers and preserves the visitor’s edited program and input', async () => {
+  $<HTMLButtonElement>('[data-run-program]').click();
+  await result();
+  $<HTMLTextAreaElement>('[data-program-source]').value = 'visitor-edited-program';
+  $<HTMLTextAreaElement>('[data-program-input]').value = '{"a":8,"b":9}';
+  hide(true);
+  window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  expect(mocks.dispose).not.toHaveBeenCalled();
+  expect($<HTMLTextAreaElement>('[data-program-source]').value).toBe('visitor-edited-program');
+  $<HTMLButtonElement>('[data-run-program]').click();
+  await vi.waitFor(() => expect(mocks.prepare).toHaveBeenCalledTimes(2));
+  expect(mocks.compile).toHaveBeenLastCalledWith('visitor-edited-program');
+  expect(mocks.prepare.mock.calls[1][1]).toBe('{"a":8,"b":9}');
+  await result();
+});
+
+test('a pending signed job remains recoverable after a cached-page round trip', async () => {
+  mocks.resume.mockResolvedValueOnce({ terminal: false, reason: 'Retry the same job.' });
+  $<HTMLButtonElement>('[data-run-program]').click();
+  await vi.waitFor(() => expect($<HTMLButtonElement>('[data-retry-job]').disabled).toBe(false));
+  const saved = sessionStorage.getItem('froglet-public-demo.pending.v1');
+  hide(true);
+  window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  $<HTMLButtonElement>('[data-retry-job]').click();
+  await vi.waitFor(() => expect(mocks.resume).toHaveBeenCalledTimes(2));
+  expect(mocks.prepare).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(mocks.resume.mock.calls[1][1])).toBe(saved);
+  await result();
+  expect(sessionStorage.getItem('froglet-public-demo.pending.v1')).toBeNull();
+});
+
+test('a final navigation still disposes the compiler after earlier cached navigations', () => {
+  hide(true);
+  window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+  hide(false);
+  expect(mocks.dispose).toHaveBeenCalledTimes(1);
+  $<HTMLButtonElement>('[data-run-program]').click();
+  expect(mocks.compile).not.toHaveBeenCalled();
+});

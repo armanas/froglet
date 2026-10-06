@@ -156,5 +156,10 @@ export function startLiveServices(scope: ParentNode = document): void {
       await updateCapacity();
     } catch (error) { if (!disposed) status.textContent = error instanceof Error ? error.message : 'The hosted demo is unavailable.'; }
   })();
-  window.addEventListener('pagehide', () => { disposed = true; control.abort(); compiler.dispose(); }, { once: true });
+  window.addEventListener('pagehide', event => {
+    // A cached document resumes with the same controls, edits and pending job.
+    // Abort only when it is actually leaving; Back must retain working handlers.
+    if (event.persisted) return;
+    disposed = true; control.abort(); compiler.dispose();
+  }, { signal: control.signal });
 }

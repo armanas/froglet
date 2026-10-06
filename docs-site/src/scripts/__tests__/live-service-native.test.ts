@@ -117,4 +117,77 @@ describe.skipIf(!enabled)('self-service browser requester against a real finite-
     if (recovered.terminal) expect(recovered.result).toEqual({ sum: 23, product: 132 });
     expect(await usage()).toEqual(admitted);
   }, 30000);
+
+  it('oversized programs, oversized input and unsafe integers are rejected before discovery', async () => {
+    seen.length = 0;
+    await expect(prepareLiveRun(deps, '{}', new Uint8Array(262145))).rejects.toThrow('bounded Wasm');
+    await expect(prepareLiveRun(deps, JSON.stringify('x'.repeat(131072)), await samples.adder.bytes())).rejects.toThrow('input is too large');
+    await expect(prepareLiveRun(deps, '{"a":9007199254740992,"b":1}', await samples.adder.bytes())).rejects.toThrow('represent exactly');
+    expect(seen).toEqual([]);
+  }, 30000);
+
+  it('the actual node refuses a forged signed deal without consuming a deal allowance', async () => {
+    const run = await prepareLiveRun(deps, '{"a":1,"b":2}', await samples.adder.bytes());
+    const usage = async () => (await (await fetch(origin + '/v1/provider/usage', {
+      headers: { authorization: 'Bearer ' + node!.token('froglet-control') },
+    })).json() as any).usage;
+    const before = await usage();
+    const body = structuredClone(run.request);
+    body.deal.signature = '0'.repeat(128);
+    const refused = await deps.transport({ method: 'POST', path: '/v1/provider/deals', body });
+    expect(refused.status).toBe(400);
+    expect(await usage()).toEqual(before);
+  }, 30000);
+
+  it('changed results and changed receipts are refused on recovery of a real accepted job', async () => {
+    const run = await prepareLiveRun(deps, '{"a":4,"b":5}', await samples.adder.bytes());
+    expect((await resumeLiveRun(deps, run)).terminal).toBe(true);
+    for (const change of ['result', 'receipt']) {
+      const altered: LiveDeps = { ...deps, transport: async request => {
+        const response = await deps.transport(request);
+        const body = structuredClone(response.body) as any;
+        if (change === 'result') body.result.sum = 999;
+        else body.receipt.signature = '0'.repeat(128);
+        return { ...response, body };
+      } };
+      const recovered = await resumeLiveRun(altered, structuredClone(run));
+      expect(recovered.terminal).toBe(false);
+      if (!recovered.terminal) expect(recovered.reason).toContain(change === 'result' ? 'does not match the signed receipt' : 'receipt does not verify');
+    }
+    const real = await resumeLiveRun(deps, run);
+    expect(real.terminal).toBe(true);
+    if (real.terminal) expect(real.result).toEqual({ sum: 9, product: 20 });
+  }, 30000);
+
+  it('real memory growth is denied and excessive output stops within the signed execution limits', async () => {
+    const compiler = newCompiler();
+    try {
+      for (const [source, expectedStatus, expectedFailure] of [
+        ['function respond(request: string): string { const before = memory.size(); const grown = memory.grow(1); return `{"before":${before},"grown":${grown},"after":${memory.size()}}`; }', 'succeeded', undefined],
+        // The native StoreLimits explicitly traps on a denied memory.grow.
+        ['function respond(request: string): string { memory.grow(129); return "{}"; }', 'failed', 'execution_failed'],
+        // AssemblyScript traps after the denied allocation. The receipt records
+        // that trap as execution_failed, not a specifically classified fuel failure.
+        ['function respond(request: string): string { const data = new Uint8Array(9 * 1024 * 1024); data[0] = 1; return `${data[0]}`; }', 'failed', 'execution_failed'],
+        ['function respond(request: string): string { return "\\\"" + "x".repeat(131073) + "\\\""; }', 'failed', 'execution_limit_exceeded'],
+      ]) {
+        const compiled = await compiler.compile(source!);
+        expect(compiled.ok).toBe(true);
+        if (!compiled.ok) throw new Error(JSON.stringify(compiled));
+        const run = await prepareLiveRun(deps, '{}', compiled.module);
+        const outcome = await resumeLiveRun(deps, run);
+        expect(outcome.terminal, JSON.stringify(outcome)).toBe(true);
+        if (!outcome.terminal) return;
+        expect(outcome.status).toBe(expectedStatus);
+        expect(outcome.failure).toBe(expectedFailure);
+        if (expectedStatus === 'succeeded') {
+          const result = outcome.result as { before: number; after: number; grown: number };
+          expect(result.grown).toBe(result.before);
+          expect(result.after).toBe(result.before + 1);
+          expect(result.after * 65536).toBeLessThanOrEqual(run.request.quote.payload.execution_limits.max_memory_bytes);
+        }
+        expect(outcome.chain.valid).toBe(true);
+      }
+    } finally { compiler.dispose(); }
+  }, 30000);
 });
