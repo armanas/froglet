@@ -41,7 +41,7 @@ describe('Developers page structure', () => {
   });
 
   it('keeps the statements other tests and readers rely on', () => {
-    expect(page).toContain('hosted live demo is temporarily unavailable');
+    expect(page).toContain('runs supplied Wasm programs and a synthetic catalog without installation or an invitation');
     expect(page).toContain('current batch and GPU constraints');
     expect(page).toContain('href="/learn/cloud-trial/"');
     expect(page).toContain('Tor is an advanced self-hosted path');

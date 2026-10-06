@@ -1,130 +1,87 @@
 ---
 import StoryLayout from '../layouts/StoryLayout.astro';
 import StoryArt from '../components/StoryArt.astro';
-import data from '../data/live-services.json';
-import { servicesView } from '../data/live-services.mjs';
-const view = servicesView(data);
-const failures = [
-  ['No invitation, or it has expired', 'New work is refused. A service link lets you inspect; it does not grant access.'],
-  ['Your invitation allowance is spent', 'New work stops. A normal call uses one quote request and one deal request. Some failures consume allowance too.'],
-  ['Your program exceeds its execution limit', 'The run stops with a failure record. It does not produce a successful answer.'],
-  ['You request an unpublished field or collection', 'The lookup refuses it. It shares only the selected snapshot, not the underlying files or database.'],
-  ['The shared provider allowance is spent', 'Further new work is refused. A restart does not refill the counters.'],
-  ['Many people call at once', 'Calls may wait or be refused. One shared provider is not a capacity promise for a crowd.'],
-];
 ---
-<StoryLayout title="Try a small service · Froglet" description="Two bounded free experiments: a supplied-program calculation and a synthetic terminology lookup. Individual invitations, finite shared allowances and recorded qualification." path="/services/">
+<StoryLayout title="Try Froglet · Public beta" description="Run your program on a public Froglet provider, query a synthetic catalog, and verify the signed result. No installation or invitation required." path="/services/">
 <div class="story-wrap">
   <section class="story-hero story-hero--compact">
     <div class="story-hero__copy">
-      <span class="story-kicker">Two small experiments · Public beta</span>
+      <span class="story-kicker">Try it yourself · Public beta</span>
       <h1>A question goes out.<br /><span class="story-accent">A result comes back.</span></h1>
-      <p class="story-lede">Alice asks Bob’s provider to run a calculation or look up a term. She receives the result and a signed record of the exchange.</p>
-      <div class="story-needs"><ul aria-label="Experiment scope"><li>Free</li><li>By invitation</li><li>Bounded work</li></ul></div>
-      {view.qualified && <p class="story-note service-discovery"><a href={data.provider.metadata_url}>Inspect public provider metadata</a>. Browsing does not run a job or grant access. Qualification was recorded <time datetime={view.observed_at}>{view.observed_at}</time>; this page does not check current availability.</p>}
-      {view.qualified && <p class="story-note service-qualification-scope">The recorded qualification used an operator-paired native requester and provider in separate processes on the same GCP machine, communicating over real public HTTPS with controlled pacing.</p>}
-      <div class="service-access-status" aria-label="Execution access" role="status" data-recorded-session-expiry={view.qualified ? data.access.session_expires_at : undefined}>
-        {view.qualified ? <><strong data-session-label>{view.access_state === 'recorded-session-expired' ? 'Recorded session expired' : 'Invitation required'}</strong><p data-session-message>{view.access_state === 'recorded-session-expired' ? 'That recorded session has ended. Published metadata and recorded examples do not grant continuing execution access. Ask for a current invitation before new work.' : 'Every new call needs a current individual invitation. The recorded qualification session is not continuing access.'}</p><p class="story-note">Recorded session expiry: <time datetime={data.access.session_expires_at}>{data.access.session_expires_at}</time>. Your own invitation can expire earlier.</p></> : <><strong>Access is being prepared</strong><p>These are proposed experiments. Provider qualification and invitation instructions are pending. There is no service to call from this page yet.</p></>}
-      </div>
-      <div class="story-actions"><a class="btn primary" href="#experiments">See the experiments</a><a class="btn secondary" href="/learn/agent-interoperability/#source-and-release-support">Get the compute client</a></div>
+      <p class="story-lede">Send a small program to Bob’s provider. Get its result and check the signed exchange in your browser.</p>
+      <div class="story-needs"><ul aria-label="Demo access"><li>No installation</li><li>No invitation</li><li>Free bounded jobs</li></ul></div>
+      <div class="story-actions"><a class="btn primary" href="#try-it">Run a job now</a><a class="btn secondary" href="/playground/">Explore the local playground</a></div>
+      <p class="story-note">The hosted demo uses a real Froglet node. The separate playground runs both sides locally in your browser.</p>
     </div>
-    <StoryArt name="06-discovery" eager alt="Alice at her laptop, exploring connected data and tools." />
+    <StoryArt name="06-discovery" eager alt="Alice exploring tools and data from her laptop." />
   </section>
 
-  <section class="story-section" id="experiments" aria-labelledby="experiments-title">
-    <div class="story-heading"><span class="story-kicker">Start small</span><h2 id="experiments-title">One calculation.<br />One selected catalog.</h2><p>Two ways to try bounded remote work. These examples demonstrate the exchange and its limits; they do not establish scientific usefulness or production reliability.</p></div>
+  <section class="story-section live-demo" id="try-it" aria-labelledby="try-title" data-live-demo>
+    <div class="story-heading"><span class="story-kicker">Your browser is Alice. The provider is Bob.</span><h2 id="try-title">Change the input.<br />Run the work.</h2><p>Your browser compiles the program and signs the request. Bob’s native runtime executes it with fuel, memory and time limits. Your browser checks his receipt against the returned result.</p></div>
     <div class="story-grid story-grid--two">
-      <article class="story-status service-card" aria-labelledby="arithmetic-title">
-        <div class="service-diagram" aria-hidden="true"><span>a + b</span><span class="service-arrow">→</span><span>result</span></div>
-        <span class="story-kicker">Bring a program</span><h3 id="arithmetic-title">A small calculation</h3>
-        <p>Alice supplies a compiled WebAssembly program and its input. Bob’s provider runs the exact program within agreed execution limits.</p>
-        {view.arithmetic ? <>
-          <details class="service-example"><summary>See the recorded input and result</summary><p class="service-code-label">Input</p><pre><code>{view.arithmetic.input}</code></pre><p class="service-code-label">Result</p><pre><code>{view.arithmetic.expected}</code></pre></details>
-          <p><a href={view.arithmetic.program.download_url}>Get the checked adder program</a></p>
-          <details><summary>Inspect the native MCP call</summary><p>Execution requires a current invitation. Save and verify the compiled program. Replace the absolute program path and your private invitation-file path, then call the configured <code>froglet</code> tool. Preserve the input and retry key when reconciling the same call.</p><pre><code>{view.arithmetic.mcp}</code></pre><p class="story-note">ABI: <code>froglet.wasm.run_json.v1</code> · {view.arithmetic.program.bytes} bytes<br />SHA-256: <code class="service-digest">{view.arithmetic.program.sha256}</code></p></details>
-        </> : <p class="service-pending">The exact program, input, result and call example will appear after actual qualification.</p>}
-        <details><summary>What the compute example covers</summary><p>This is requester-supplied computation. An invitation admits bounded work on the provider; it is not restricted to this one program. It does not remove the program’s limits.</p><p>The native MCP tool accepts a compiled Wasm program, not source text. This release has no dedicated CLI <code>run-compute</code> command. <a href="/learn/agent-interoperability/#native-compute-and-recovery">Read the compute guide</a>.</p></details>
+      <article class="story-status live-demo-card" aria-labelledby="program-title">
+        <span class="story-kicker">Bring a program</span><h3 id="program-title">Add and multiply</h3>
+        <p>Try new numbers. You can also change the program before sending it.</p>
+        <label for="program-input">JSON input</label>
+        <textarea id="program-input" data-program-input rows="4" maxlength="131072" spellcheck="false">{'{"a": 6, "b": 7}'}</textarea>
+        <details><summary>Change the program</summary><p>This AssemblyScript function compiles in your browser. Bob runs the compiled WebAssembly program. Try replacing <code>a + b</code> with <code>a * a + b</code>.</p><label for="program-source">Program source</label><textarea id="program-source" data-program-source rows="14" maxlength="65536" spellcheck="false"></textarea><button type="button" class="btn secondary" data-reset-program>Restore example</button></details>
+        <button type="button" class="btn primary" data-run-program disabled>Run on Bob</button>
+        <p class="story-note">Use sample data. Your compiled program and input go to the demo server, which keeps job records.</p>
       </article>
-      <article class="story-status service-card" aria-labelledby="synthetic-title">
-        <div class="service-diagram service-diagram--catalog" aria-hidden="true"><span>source</span><span class="service-arrow">→</span><span>target</span></div>
-        <span class="story-kicker">Query selected data</span><h3 id="synthetic-title">A terminology lookup</h3>
-        <p>Alice asks for a few rows from a small, made-up terminology catalog. Bob shares a selected snapshot and exact fields.</p>
-        {view.synthetic ? <>
-          <details class="service-example"><summary>See the recorded input and result</summary><p class="service-code-label">Input</p><pre><code>{view.synthetic.input}</code></pre><p class="service-code-label">Result</p><pre><code>{view.synthetic.expected}</code></pre></details>
-          {view.synthetic.share_url && <p><a href={view.synthetic.share_url}>Inspect the checked service link</a></p>}
-          <details><summary>Inspect the native MCP call</summary><p>Execution requires a current invitation. Replace your private invitation-file path and use the configured <code>froglet</code> tool.</p><pre><code>{view.synthetic.mcp}</code></pre></details>
-          <details><summary>Inspect the command-line call</summary><p>Execution requires a current invitation. Replace the executable and invitation-file paths. Use the exact installed native binary and the same environment as your configured Froglet tool.</p><pre><code>{view.synthetic.cli}</code></pre></details>
-        </> : <p class="service-pending">The published catalog, selected fields, input, result and call example will appear after actual qualification.</p>}
-        <details><summary>What the lookup example covers</summary><p>These entries are synthetic. They are not an authoritative ontology or a validated mapping between vocabularies.</p><p>The released handler accepts <code>describe</code> and <code>select</code>, with bounded rows and scalar <code>equals</code> comparisons. It does not accept arbitrary SQL or a <code>query</code>/<code>filter</code> operation.</p></details>
+      <article class="story-status live-demo-card" aria-labelledby="catalog-title">
+        <span class="story-kicker">Query selected data</span><h3 id="catalog-title">Look up a term</h3>
+        <p>Query a tiny catalog of invented terminology. The blood label has two targets, so you can inspect the ambiguity.</p>
+        <label for="query-term">Which rows?</label>
+        <select id="query-term" data-query-term><option value="">All five rows</option><option value="DEMO:sample.plasma">Plasma</option><option value="DEMO:sample.serum">Serum</option><option value="DEMO:sample.blood">Blood</option><option value="DEMO:sample.saliva">Saliva — no mapping</option></select>
+        <button type="button" class="btn primary" data-run-query disabled>Query Bob’s catalog</button>
+        <div class="live-demo-failure"><h4>What if a program never stops?</h4><p>Run an infinite loop. Bob stops it within the execution budget and signs a failure receipt.</p><button type="button" class="btn secondary" data-run-failure disabled>Try the budget limit</button></div>
       </article>
     </div>
+    <section class="live-demo-result" aria-labelledby="result-title">
+      <span class="story-kicker">Returned by the provider</span><h3 id="result-title">Your result</h3>
+      <p class="live-demo-status" data-job-status role="status" aria-live="polite">Connecting to the public demo…</p>
+      <pre data-job-result aria-label="Returned JSON result"></pre>
+      <p class="story-note live-demo-commitment" data-program-commitment></p>
+      <div class="story-actions"><button type="button" class="btn secondary" data-download-receipt disabled>Download signed exchange</button><button type="button" class="btn secondary" data-retry-job disabled>Retry this job</button></div>
+      <details data-exchange-export hidden><summary>Inspect or copy the signed exchange</summary><p>This JSON can also be pasted into the <a href="/verify-receipt/">standalone record verifier</a>. It contains public signed records, not a private signing key.</p><label for="exchange-json">Signed exchange JSON</label><textarea id="exchange-json" data-exchange-json rows="12" readonly spellcheck="false"></textarea></details>
+      <p class="story-note" data-recovery-note>The request stays in this browser session so an interrupted job can be recovered.</p>
+      <details><summary>Discard a previous local reference</summary><p>An already submitted job may still have completed. Discarding its reference does not cancel it or replenish the shared allowance. A new run requests new work.</p><button type="button" class="btn secondary" data-discard-job>Discard local reference</button></details>
+    </section>
+    <p class="story-note" data-demo-capacity>Each program has at most 2 seconds, 8 MiB of memory and 50 million fuel. The public beta has a finite shared allowance. Calls may be refused when capacity is busy or spent.</p>
   </section>
 
-  <section class="story-section story-split" id="access">
-    <div><span class="story-kicker">Your connection and invitation</span><h2>Inspect with a link.<br />Call with permission.</h2>
-      <ol class="story-start">
-        <li><strong>Use the v0.4.7-beta.1 native client.</strong>Get the exact <a href="https://github.com/armanas/froglet/releases/tag/v0.4.7-beta.1">v0.4.7-beta.1 release</a>, verify its downloaded binary and select that binary in your agent’s native MCP profile. Follow the <a href="/learn/agent-interoperability/#source-and-release-support">compute client guide</a> and check your configured tool’s status. This page does not install or connect an agent.</li>
-        <li><strong>Ask the operator to register your Froglet node ID.</strong>Use the identity of your running local Node. The operator authorizes that identity for the exact approved service offers and provides private connection settings.</li>
-        <li><strong>Activate the private A2A connection profile.</strong>Follow the <a href="/learn/agent-interoperability/#enable-optional-a2a">A2A connection guide</a> and the operator’s instructions. Restart your local Node as instructed, preserving its identity. The profile connects it to this exact provider through A2A.</li>
-        <li><strong>Get your own expiring invitation file.</strong>The operator delivers it separately from the connection settings through a trusted channel. It admits new work with a limited request allowance. A recorded test session does not promise access through a later event.</li>
-        <li><strong>Use the invitation file’s private local path.</strong>Your agent reads that file locally for the call. Keep both credentials out of prompts, URLs and this website.</li>
-      </ol>
-      {data.access.request_url ? <><p><a class="btn primary" href={data.access.request_url}>Request an invitation</a></p><p class="story-note">Share only your public Froglet node ID and desired experiment in the public discussion. Keep credentials and private files out of it. The operator decides whether to approve the request and delivers access separately through a private channel; posting a request does not grant access.</p></> : <p class="service-pending">Invitation instructions are pending. There is no public signup or token form here.</p>}
-    </div>
-    <div class="story-callout"><h3>Two separate permissions.</h3><p>The A2A bearer credential authenticates your configured connection and restricts your signing identity and exact signed offers. Your separate expiring invitation file admits new work on the provider. For these experiments, new work uses the configured A2A connection.</p><p>The local Node reads the private connection configuration through <code>FROGLET_A2A_CONFIG_PATH</code>. The call’s <code>access_token_file</code> refers to your separate invitation file.</p><p>An ordinary admission invitation covers the provider’s services; the A2A connection adds its offer restrictions. Use separate providers when different people must never access other data.</p><p>Each ordinary call needs a quote and a deal. Keep the same retry key and input when recovering an uncertain call; use a new key for new work.</p><p class="story-note">On Unix, each private file must be owned by the user running the local tool or Node that reads it, mode 0600 and not a symlink. <a href="/learn/share-services/#invite-access-and-bounded-http-tools">Read the invitation and recovery guide</a>.</p></div>
+  <section class="story-section"><div class="story-heading"><span class="story-kicker">What you are trying</span><h2>A supplied program.<br />A bounded host.</h2><p>The program can change for one question. The host keeps its admission rules, resource limits and signed records.</p></div>
+    <div class="story-scroll"><table class="story-table"><thead><tr><th scope="col">You can try</th><th scope="col">What happens</th></tr></thead><tbody>
+      <tr><th scope="row">Your program and JSON input</th><td>The browser compiles the function. The remote node runs its exact bytes and reports their hash.</td></tr>
+      <tr><th scope="row">A selected terminology query</th><td>The provider returns only the published synthetic snapshot and selected fields.</td></tr>
+      <tr><th scope="row">An infinite loop</th><td>The execution budget stops it. You can inspect the signed failure record.</td></tr>
+      <tr><th scope="row">A network interruption</th><td>Retry the saved job. Recovering an accepted result does not request another deal.</td></tr>
+      <tr><th scope="row">The signed evidence</th><td>The browser verifies the provider’s commitments and the result hash. Signatures do not establish scientific truth or physical execution.</td></tr>
+    </tbody></table></div>
+    <p class="story-note">This beta demonstrates free Wasm jobs and a synthetic catalog. Paid operation, GPU work, arbitrary containers and sustained production capacity are separate work.</p>
   </section>
-
-  <section class="story-section" id="limits">
-    <div class="story-heading"><span class="story-kicker">Shared capacity</span><h2>A small allowance.<br />Shared by everyone.</h2><p>{view.qualified ? 'Both examples use one shared provider.' : 'The proposed experiments share one provider.'} Qualification calls and other admitted work use the same finite provider allowance.</p></div>
-    <p class="story-kicker">{data.capacity.limits_state === 'proposed' ? 'Proposed provider ceilings' : 'Observed provider ceilings'}</p>
-    <div class="service-allowances" aria-label="Provider allowance ceilings">
-      <div><span class="service-number">{data.capacity.limits.deals}</span><span>deals</span></div><div><span class="service-number">{data.capacity.limits.quotes}</span><span>quotes</span></div><div><span class="service-number">{data.capacity.limits.reserved_runtime_ms / 1000}s</span><span>reserved runtime</span></div>
-    </div>
-    <p class="story-note">{data.capacity.limits_state === 'proposed' ? 'Proposed ceilings; not yet observed on a qualified provider.' : 'Observed provider-wide ceilings.'} These are shared ceilings, not per-person allocations or a promise of successful work.</p>
-    {view.remaining ? <div class="story-callout"><h3>Last observed remaining allowance</h3><p>{view.remaining.deals} deals · {view.remaining.quotes} quotes · {view.remaining.reserved_runtime_ms}ms reserved runtime.</p><p>Observed <time datetime={view.remaining.observed_at}>{view.remaining.observed_at}</time>. Work since then may have reduced these counts; they are not live.</p></div> : <p class="service-pending">Remaining allowance has not yet been observed. No live capacity counter is shown.</p>}
-    <details class="service-limit-details"><summary>How the limits work</summary><p>Runtime is reserved using the maximum allowed for each admitted job. The first reached ceiling blocks new work. Counters survive restarts; restarting does not replenish them.</p><p>{data.ingress.state === 'proposed' ? 'Proposed HTTP settings, pending qualification:' : 'Recorded HTTP settings:'} {data.ingress.requests_per_second} request/s in aggregate, burst {data.ingress.burst}, {data.ingress.connections} connections. This is an HTTP setting, not a concurrent-user or throughput guarantee. This serving setup has no durable total-HTTP-request quota.</p>{view.qualified && <p>Metadata GET bursts were exercised; the three recorded native jobs used controlled pacing. Unpaced native bursts and concurrent use remain unqualified. Follow the operator’s pacing instructions and make one call at a time.</p>}</details>
-  </section>
-
-  <section class="story-section" id="failures"><div class="story-heading"><span class="story-kicker">When a call cannot run</span><h2>Know the boundary<br />before asking.</h2></div><div class="story-scroll"><table class="story-table"><thead><tr><th scope="col">Situation</th><th scope="col">What to expect</th></tr></thead><tbody>{failures.map(([situation, behavior]) => <tr><th scope="row">{situation}</th><td>{behavior}</td></tr>)}</tbody></table></div><p class="story-note">These are expected boundaries of the released software, not a claim that every failure was exercised publicly. A signed record identifies the terms and outcome; it does not establish scientific truth or suitability for your work.</p></section>
-  <section class="story-closing"><h2>Check the record for yourself.</h2><p>Inspect a sample signed exchange in your browser, or read the guide before making your own call.</p><div class="story-actions"><a class="btn primary" href="/verify-receipt/">Inspect a sample record</a><a class="btn secondary" href="/learn/agent-interoperability/">Native compute guide</a></div></section>
+  <section class="story-closing"><h2>Use your own agent next.</h2><p>The same native Froglet runtime is available for MCP clients and HTTP integrations. Providers choose their own access policy; invitation-only hosting is an option, not a requirement of Froglet.</p><div class="story-actions"><a class="btn primary" href="/learn/agent-interoperability/#native-compute-and-recovery">Native compute guide</a><a class="btn secondary" href="/verify-receipt/">Explore record verification</a></div></section>
 </div>
 </StoryLayout>
 <script>
-  import { recordedSessionAccess } from '../data/live-services.mjs';
-  document.querySelectorAll<HTMLElement>('[data-recorded-session-expiry]').forEach((marker) => {
-    const expiry = marker.dataset.recordedSessionExpiry;
-    if (!expiry) return;
-    const update = () => {
-      const expired = recordedSessionAccess(expiry) === 'recorded-session-expired';
-      const label = marker.querySelector('[data-session-label]');
-      const message = marker.querySelector('[data-session-message]');
-      if (label) label.textContent = expired ? 'Recorded session expired' : 'Invitation required';
-      if (message) message.textContent = expired
-        ? 'That recorded session has ended. Published metadata and recorded examples do not grant continuing execution access. Ask for a current invitation before new work.'
-        : 'Every new call needs a current individual invitation. The recorded qualification session is not continuing access.';
-    };
-    update();
-    window.setInterval(update, 30000);
-    document.addEventListener('visibilitychange', update);
-  });
+  import { startLiveServices } from '../scripts/live-services-ui';
+  startLiveServices();
 </script>
 <style>
-  .service-card { min-width:0; }
-  .service-card pre { max-width:100%; overflow:auto; padding:18px; border:1px solid var(--border-strong); border-radius:6px; background:var(--copy-bg); color:var(--copy-text); font:13px/1.7 var(--font-mono); }
-  .service-card details { padding-block:14px; border-top:1px solid var(--border-strong); }
-  .service-card summary, .service-limit-details summary { cursor:pointer; color:var(--fg1); font-weight:600; }
-  .service-card details p, .service-limit-details[open] p { margin-top:16px; }
-  .service-card .service-code-label { margin-bottom:8px; font:500 12px/1.5 var(--font-mono); text-transform:uppercase; letter-spacing:.08em; }
-  .service-diagram { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:36px 20px; margin-bottom:26px; color:var(--accent-code); background:var(--bg); border:1px solid var(--border-strong); border-radius:6px; font:500 clamp(20px,3vw,32px)/1.3 var(--font-mono); }
-  .service-diagram--catalog span:not(.service-arrow) { padding:8px 14px; border:1px solid var(--border-strong); border-radius:4px; }
-  .service-access-status { margin-top:24px; border-left:3px solid var(--frog-400); padding:2px 0 2px 16px; max-width:52ch; }
-  .service-access-status p { font-size:14px; line-height:1.65; margin:8px 0 0; }
-  .service-pending { border-left:3px solid var(--border-strong); padding-left:16px; }
-  .service-digest, time { overflow-wrap:anywhere; }
-  .service-allowances { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:24px; margin-bottom:22px; }
-  .service-allowances > div { display:flex; flex-direction:column; padding:22px 0; border-top:2px solid var(--border-strong); color:var(--fg2); }
-  .service-number { color:var(--accent-code); font:500 clamp(32px,4vw,48px)/1.3 var(--font-mono); letter-spacing:-.04em; }
-  .service-limit-details { border-block:1px solid var(--border-strong); padding-block:20px; margin-top:28px; }
-  .story-table th[scope="row"] { width:38%; }
-  @media(max-width:420px) { .service-card { padding:22px; } .service-diagram { padding:26px 14px; font-size:21px; } .service-allowances { gap:14px; } .service-allowances > div { font-size:13px; } .story-table { font-size:14px; } .story-table th, .story-table td { padding-inline:6px; } }
+  .live-demo-card { min-width:0; }
+  .live-demo label { display:block; margin:20px 0 8px; font-weight:600; color:var(--fg1); }
+  .live-demo textarea,.live-demo select { box-sizing:border-box; width:100%; border:1px solid var(--border-strong); border-radius:6px; padding:14px; background:var(--copy-bg); color:var(--copy-text); font:14px/1.6 var(--font-mono); }
+  .live-demo textarea { resize:vertical; }
+  .live-demo details { margin-block:20px; }
+  .live-demo summary { cursor:pointer; color:var(--fg1); font-weight:600; }
+  .live-demo details p { margin-top:14px; }
+  .live-demo .btn { margin-top:18px; cursor:pointer; }
+  .live-demo .btn:disabled { opacity:.5; cursor:not-allowed; }
+  .live-demo-failure { margin-top:42px; padding-top:24px; border-top:1px solid var(--border-strong); }
+  .live-demo-failure h4 { color:var(--fg1); font-size:20px; }
+  .live-demo-result { margin-top:46px; padding-top:30px; border-top:2px solid var(--border-strong); }
+  .live-demo-status { white-space:pre-wrap; color:var(--fg1); }
+  .live-demo-result pre { min-height:100px; overflow:auto; padding:22px; border:1px solid var(--border-strong); border-radius:6px; background:var(--copy-bg); color:var(--copy-text); font:15px/1.6 var(--font-mono); }
+  .live-demo-commitment { overflow-wrap:anywhere; }
+  @media(max-width:420px) { .live-demo-card { padding:22px; } .live-demo-result pre { padding:14px; } }
 </style>

@@ -1,0 +1,9 @@
+{
+  "terminology": [
+    {"source":"DEMO:sample.plasma","target":"DEMO:specimen.plasma","curator_note":"Synthetic private note, excluded from the public snapshot."},
+    {"source":"DEMO:sample.serum","target":"DEMO:specimen.serum","curator_note":"Synthetic private note, excluded from the public snapshot."},
+    {"source":"DEMO:sample.blood","target":"DEMO:specimen.whole_blood","curator_note":"Synthetic private note, excluded from the public snapshot."},
+    {"source":"DEMO:sample.blood","target":"DEMO:specimen.plasma","curator_note":"Synthetic private note, excluded from the public snapshot."},
+    {"source":"DEMO:sample.plasma","target":"DEMO:specimen.plasma","curator_note":"Synthetic private note, excluded from the public snapshot."}
+  ]
+}

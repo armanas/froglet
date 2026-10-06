@@ -14,10 +14,10 @@ const VERSIONS = { astro: '7.3.5', 'http-cache-semantics': '4.3.0', wrangler: '4
 const EFFECTS = new Set(['http-cache-semantics', 'astro', '@astrojs/mdx', '@astrojs/starlight', 'astro-expressive-code']);
 const HASHES = {
   astroConfig: 'dc5fe264bffb94d9dc825976caba38584e8c2d239204254f0c75372841d92b79',
-  wranglerConfig: '989d153f2e16cc42ec0217255c04034ba2ecb87566b60393ddc4bc4a05d1db07',
+  wranglerConfig: 'c73b498f31b31e8bebb0faca0f8bce5f44200c5a824b73966aeedff80e4dc26a',
   remoteSource: 'f373fa76e3112446db327c79b34e2bbb1ef1dcad41affb60788adf30edc9588e',
   // Only the generated Wasm filename's content hash is normalized. No JavaScript is omitted.
-  bundle: 'dcef1268fbdb11a85e474b37cd4eca78ddb9e667a24b731bbf3f089dcb2f7834',
+  bundle: '2b2fb276ec52dc35c0b6bf010f23f7cda5ca49de5f0ab6463f2618568ba9394b',
 };
 const WORKER_SOURCES = {
   'node_modules/qrcode-generator/dist/qrcode.mjs': 'ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0',
@@ -30,7 +30,9 @@ const WORKER_SOURCES = {
   'src/data/service-link-page.ts': '3fda670ed4ec7f384cad3b543743793bffc57c598402d7b9ac87d308124b2c2b',
   'src/data/service-link-verifier.ts': 'ecee4c186515e943629a15a281ce8843001e3f7e69bf57c9af3104940abbc3b3',
   'src/generated/verifier/froglet_verify.js': '4c938b45a3d3abdf7aeaf000a5fcca4b70bd678989a06d9f61d557ae8ab1da09',
-  'src/worker.ts': '61644024eb044d59bb7186239a3cf48e2bd5634fa7683153f2544372502996cb',
+  'src/data/public-demo-config.ts': '2384ca337d17ee20f71aec3d0ddc62544482cef1fa6d2ca8039f62714bfab05f',
+  'src/data/public-demo-proxy.ts': '4ebb11d0b23cde5eaf3cda1800f53f0c8e68b331cfd7f4a315022b87afdb5861',
+  'src/worker.ts': '6bf1c775bfebcd9841975257d83966611f006594a7fe958a1d0dd6242f31dc14',
 };
 // Existing non-executable evidence links to tests; any change needs review.
 const TEST_REFERENCE_SOURCE = { 'src/data/maturity.ts': '35ddb56fef646cb27bad4e00f01ba42a710376366a953e2d4e79dabcbc5d107f' };
