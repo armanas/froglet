@@ -14,10 +14,10 @@ const VERSIONS = { astro: '7.3.5', 'http-cache-semantics': '4.3.0', wrangler: '4
 const EFFECTS = new Set(['http-cache-semantics', 'astro', '@astrojs/mdx', '@astrojs/starlight', 'astro-expressive-code']);
 const HASHES = {
   astroConfig: 'dc5fe264bffb94d9dc825976caba38584e8c2d239204254f0c75372841d92b79',
-  wranglerConfig: 'c73b498f31b31e8bebb0faca0f8bce5f44200c5a824b73966aeedff80e4dc26a',
+  wranglerConfig: '8fb3b99a0b079cdc2a98f0057c2c2036243d925912abc7ad9da05046dcc14250',
   remoteSource: 'f373fa76e3112446db327c79b34e2bbb1ef1dcad41affb60788adf30edc9588e',
   // Only the generated Wasm filename's content hash is normalized. No JavaScript is omitted.
-  bundle: '2b2fb276ec52dc35c0b6bf010f23f7cda5ca49de5f0ab6463f2618568ba9394b',
+  bundle: '55c8a8546819bed2b7f2bd999f7fcaccb136379c91c2b75cb113ae735ed6ea7a',
 };
 const WORKER_SOURCES = {
   'node_modules/qrcode-generator/dist/qrcode.mjs': 'ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0',
@@ -30,9 +30,9 @@ const WORKER_SOURCES = {
   'src/data/service-link-page.ts': '3fda670ed4ec7f384cad3b543743793bffc57c598402d7b9ac87d308124b2c2b',
   'src/data/service-link-verifier.ts': 'ecee4c186515e943629a15a281ce8843001e3f7e69bf57c9af3104940abbc3b3',
   'src/generated/verifier/froglet_verify.js': '4c938b45a3d3abdf7aeaf000a5fcca4b70bd678989a06d9f61d557ae8ab1da09',
-  'src/data/public-demo-config.ts': '2384ca337d17ee20f71aec3d0ddc62544482cef1fa6d2ca8039f62714bfab05f',
-  'src/data/public-demo-proxy.ts': '4ebb11d0b23cde5eaf3cda1800f53f0c8e68b331cfd7f4a315022b87afdb5861',
-  'src/worker.ts': '6bf1c775bfebcd9841975257d83966611f006594a7fe958a1d0dd6242f31dc14',
+  'src/data/public-demo-config.ts': 'b9daa65e5561a90e7c94a7ffa72a118b50c9950594297260f69ca8efefe359a3',
+  'src/data/public-demo-proxy.ts': '0fa95be304dad55de880ddd80c91b366fe865c52babe48cb86e6909431ed215c',
+  'src/worker.ts': '1cd1a0c41c9fa4f30b8133026345dd5fcec3303f6329366c12a7ee321da48f35',
 };
 // Existing non-executable evidence links to tests; any change needs review.
 const TEST_REFERENCE_SOURCE = { 'src/data/maturity.ts': '35ddb56fef646cb27bad4e00f01ba42a710376366a953e2d4e79dabcbc5d107f' };

@@ -6,6 +6,7 @@
   "vars": {
     "FROGLET_SITE_ORIGIN": "https://froglet.dev",
     "FROGLET_PUBLIC_DEMO_ENABLED": "true",
+    "FROGLET_PUBLIC_MARKETPLACE_READ_ENABLED": "true",
     "FROGLET_PUBLIC_DEMO_PROVIDER_ID": "c7a15140cc28833978197bdef7daf30e419502f186f59ff88584f453531ea894",
     "FROGLET_PUBLIC_DEMO_ORIGIN": "https://froglet-public-beta-20261006.fly.dev"
   },

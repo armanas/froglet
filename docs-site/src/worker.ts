@@ -4,7 +4,7 @@ import { serviceReference, sharedService } from './data/shared-service';
 import { resolveServiceLink, restoreServiceLinkCache } from './data/service-link';
 import { renderServiceLinkHtml, renderServiceLinkMarkdown } from './data/service-link-page';
 import { verifyServiceLinkEvidence } from './data/service-link-verifier';
-import { publicDemoResponse, type PublicDemoEnv } from './data/public-demo-proxy';
+import { publicDemoResponse, publicMarketplaceReadResponse, type PublicDemoEnv } from './data/public-demo-proxy';
 
 interface WorkerEnv extends PublicDemoEnv {
 	ASSETS: {
@@ -23,6 +23,8 @@ const jsonHeaders = {
 
 export default {
 	async fetch(request: Request, env: WorkerEnv): Promise<Response> {
+		const read = await publicMarketplaceReadResponse(request, env);
+		if (read) return read;
 		const demo = await publicDemoResponse(request, env);
 		if (demo) return demo;
 		const url = new URL(request.url);
