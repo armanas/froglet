@@ -280,6 +280,10 @@ function renderServiceList(root: HTMLElement, snapshot: MarketplaceSnapshot, sta
 	if (!table) return;
 	const now = Date.now();
 	const ctx: RenderContext = { providers: new Map(snapshot.providers.map((provider) => [provider.providerId, provider])), stale, now };
+	// Renewed checks rebuild the facts; keep the visitor's disclosure state by service identity.
+	const expanded = new Set(listItems(table)
+		.filter((item) => item.querySelector('[data-marketplace-toggle]')?.getAttribute('aria-expanded') === 'true')
+		.map((item) => item.dataset.key));
 	for (const body of Array.from(table.tBodies)) {
 		if (body.classList.contains('mkt-item') || body.classList.contains('mkt-skeleton-rows')) body.remove();
 	}
@@ -289,6 +293,12 @@ function renderServiceList(root: HTMLElement, snapshot: MarketplaceSnapshot, sta
 	for (const offer of snapshot.offers) {
 		const item = buildItem(offer, ctx);
 		const key = item.dataset.key ?? '';
+		if (expanded.has(key)) {
+			item.querySelector('[data-marketplace-toggle]')?.setAttribute('aria-expanded', 'true');
+			const detail = item.querySelector<HTMLElement>('.mkt-detail');
+			if (detail) detail.hidden = false;
+			item.classList.add('is-open');
+		}
 		next.set(key, item.dataset.signature ?? '');
 		if (previous && previous.size > 0) {
 			if (!previous.has(key)) item.classList.add('is-new');

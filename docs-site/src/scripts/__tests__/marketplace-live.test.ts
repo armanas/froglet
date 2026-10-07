@@ -632,6 +632,43 @@ describe('sorting, details and change highlights', () => {
     expect(items()[0].classList.contains('is-open')).toBe(false);
   });
 
+  it('keeps the same service drawer open through automatic refresh while renewing its check', async () => {
+    vi.useFakeTimers(); dashboard();
+    await refresh(catalog([shared('renewing', { availability: checked(20) })]));
+    const item = items()[0];
+    item.querySelector<HTMLButtonElement>('[data-marketplace-toggle]')!.click();
+    const checkTime = item.querySelector('.mkt-facts')!.textContent;
+    // The same offer id from another provider must not inherit the open drawer.
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify(catalog([
+      shared('renewing'),
+      shared('renewing', { providerId: 'cd'.repeat(32) }),
+    ]))));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(item.querySelector('.service-availability')!.textContent).toBe('Check expired');
+    expect(item.querySelector<HTMLElement>('.mkt-detail')!.hidden).toBe(false);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const renewed = items().find((row) => row.dataset.key === `${provider}:renewing`)!;
+    const button = renewed.querySelector<HTMLButtonElement>('[data-marketplace-toggle]')!;
+    const detail = renewed.querySelector<HTMLElement>('.mkt-detail')!;
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(button.getAttribute('aria-controls')).toBe(detail.id);
+    expect(detail.hidden).toBe(false);
+    expect(renewed.classList.contains('is-open')).toBe(true);
+    expect(renewed.querySelector('.service-availability')!.textContent).toBe('Recently checked');
+    expect(detail.querySelector('[data-marketplace-availability]')!.textContent).toBe('Recently checked · open');
+    expect(detail.querySelector('.mkt-facts')!.textContent).not.toBe(checkTime);
+    const other = items().find((row) => row.dataset.key === `${'cd'.repeat(32)}:renewing`)!;
+    expect(other.querySelector('[data-marketplace-toggle]')!.getAttribute('aria-expanded')).toBe('false');
+    expect(other.querySelector<HTMLElement>('.mkt-detail')!.hidden).toBe(true);
+    button.click();
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(detail.hidden).toBe(true);
+    await respond(catalog([shared('renewing')]));
+    expect($('[data-marketplace-toggle]').getAttribute('aria-expanded')).toBe('false');
+    expect($<HTMLElement>('.mkt-detail').hidden).toBe(true);
+  });
+
   it('copies a value from the drawer and says so, and says when copying failed', async () => {
     vi.useFakeTimers(); dashboard();
     const writeText = vi.fn().mockResolvedValue(undefined);
