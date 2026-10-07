@@ -150,3 +150,42 @@ override. Wrangler remains 4.143.1; no advisory exception is added or widened.
 The regression loads Sharp from both actual resolution paths, checks the native
 library versions, and decodes a controlled SVG through each. This patch does not
 remediate the separately tracked cache-library behavior or change its expiry.
+
+### 7 October 2026 bounded public-read adapter review
+
+The custom Worker now has fixed-provider GET adapters for public profile and
+inventory reads. The reviewed route path validates the provider, request shape,
+response DTO and body size, refuses redirects, forwards no caller credentials,
+and sets responses to `no-store`. A single one-second deadline bounds admission,
+fetch and body handling, including a rate limiter or cancellation that does not
+settle. The existing public-demo wire contract is unchanged. The new enable flag
+uses the existing 120-requests-per-60-seconds binding; no resource is allocated.
+The independent source review and 39 route tests included actual elapsed-time
+regressions for stalled admission, fetch and cancellation.
+
+A fresh local Wrangler 4.143.1 production dry-run matched the same thirteen
+imported sources, with every source-map `sourcesContent` entry equal to its
+actual source file. Only the three reviewed adapter/entrypoint sources and the
+enable-flag configuration changed. The complete Worker contained no affected
+cache-policy code, and dependency versions, Astro configuration and the reviewed
+Astro remote-image caller remained unchanged. The new SHA-256 pins are:
+
+| Reviewed bytes | SHA-256 |
+| --- | --- |
+| `wrangler.jsonc` | `8fb3b99a0b079cdc2a98f0057c2c2036243d925912abc7ad9da05046dcc14250` |
+| `src/data/public-demo-config.ts` | `b9daa65e5561a90e7c94a7ffa72a118b50c9950594297260f69ca8efefe359a3` |
+| `src/data/public-demo-proxy.ts` | `0fa95be304dad55de880ddd80c91b366fe865c52babe48cb86e6909431ed215c` |
+| `src/worker.ts` | `1cd1a0c41c9fa4f30b8133026345dd5fcec3303f6329366c12a7ee321da48f35` |
+| Complete normalized Worker | `55c8a8546819bed2b7f2bd999f7fcaccb136379c91c2b75cb113ae735ed6ea7a` |
+
+The raw dry-run Worker SHA-256 was
+`656731246306939d8f7382af21d9aea4014ce4126a65ccbb1f48118f421969fd`.
+Normalization still replaces only the single generated verifier Wasm filename's
+content hash; it omits no JavaScript. The separate verifier Wasm asset existed
+and had SHA-256
+`508be94e2582ea708ad73e14bfb3a23b1c060039af5b1dcc72aee0d9a5dd445f`.
+This source/configuration requalification does not remediate the known
+`http-cache-semantics` 4.3.0 max-stale/shared-cookie behavior. The 17 October
+expiry, newer-version refusal, complete graph and byte checks, mandatory
+audit/registry/bundle review even with a clean audit, and all existing rejection
+controls are unchanged; no advisory exception is added or widened.
