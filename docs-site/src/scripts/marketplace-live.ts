@@ -268,7 +268,7 @@ function initArchiveControl(root: HTMLElement): void {
 	caption.dataset.marketplaceArchiveLabel = '';
 	label.append(input, caption);
 	fieldset.append(label);
-	const explanation = h('p', 'mkt-help', 'Public beta entries appear first. Older and internal entries remain available in the archive and technical evidence; their availability is not assumed.');
+	const explanation = h('p', 'mkt-help', 'Public beta entries appear first. Offers from other providers, and older or internal entries, are listed in the archive and technical evidence; this site has not checked their availability.');
 	const side = root.querySelector('.mkt-side');
 	if (side) side.append(fieldset, explanation);
 	else root.querySelector('[data-marketplace-service-list]')?.parentElement?.before(fieldset, explanation);
