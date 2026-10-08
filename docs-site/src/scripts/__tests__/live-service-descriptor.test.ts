@@ -1,10 +1,15 @@
 // @vitest-environment node
 // Tracked conformance keys and the actual frozen Rust kernel/verifier; transport
 // is local. No C7 credential, publication, request or native job is involved.
-import { expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
+// The unrelated service-link route imports Worker-specific Wasm. Only demo routing is exercised here.
+vi.mock('../../data/service-link-verifier', () => ({ verifyServiceLinkEvidence: () => ({ valid: true }) }));
+import worker from '../../worker';
 import { prepareLiveRun } from '../live-service-client';
-import { PUBLIC_DEMO } from '../../data/public-demo-config';
+import { PUBLIC_DEMO, PUBLIC_DEMO_PREFIX } from '../../data/public-demo-config';
 import { kernel, verifier, vectors } from './playground-helpers';
+
+afterEach(() => { vi.unstubAllGlobals(); });
 
 const seed = '11'.repeat(32), provider = kernel.publicKey(seed);
 const historical = kernel.sign(seed, 'descriptor', 1700000000, { ...vectors.artifacts.descriptor.artifact.payload, capabilities: { service_kinds: [PUBLIC_DEMO.catalogService, 'compute.wasm.v1'], execution_runtimes: ['builtin', 'wasm'] } });
@@ -43,6 +48,25 @@ test('a valid unchanged offer uses its exact signed historical descriptor when c
   expect(kernel.canonicalize(run.artifacts.offer)).toBe(before);
   expect(f.seen.filter(r => r.path.startsWith('/v1/artifacts/')).map(r => r.path)).toEqual(['/v1/artifacts/' + historical.hash]);
   expect(verifier.validateChain([run.artifacts.descriptor, run.artifacts.offer, run.artifacts.quote, run.artifacts.deal]).valid).toBe(true);
+});
+
+test('the historical descriptor read passes through the deployed Worker route table', async () => {
+  // The fixture plays the native node behind the Worker; the browser transport reaches it only via worker.fetch.
+  const f = fixture(), node = f.deps.transport;
+  const upstream = vi.fn(async (request: Request) => {
+    const path = new URL(request.url).pathname;
+    const answer = await node({ method: request.method, path, body: request.method === 'POST' ? JSON.parse(await request.text()) : undefined });
+    return new Response(JSON.stringify(answer.body), { status: answer.status });
+  });
+  vi.stubGlobal('fetch', upstream);
+  const env = { ASSETS: { fetch: async () => new Response('Not found', { status: 404 }) }, FROGLET_PUBLIC_DEMO_ENABLED: 'true', FROGLET_PUBLIC_DEMO_PROVIDER_ID: provider, PUBLIC_DEMO_RATE_LIMITER: { limit: async () => ({ success: true }) } };
+  f.deps.transport = async ({ method, path, body }: any) => {
+    const response = await worker.fetch(new Request('https://froglet.dev' + PUBLIC_DEMO_PREFIX + path, { method, headers: body === undefined ? {} : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }), env as any);
+    return { status: response.status, body: await response.json() };
+  };
+  const run = await prepareLiveRun(f.deps, '{"op":"describe"}');
+  expect(run.artifacts.descriptor).toEqual(historical);
+  expect(upstream.mock.calls.map(([request]) => new URL((request as Request).url).pathname)).toContain('/v1/artifacts/' + historical.hash);
 });
 
 test.each(['record-hash', 'record-actor', 'record-kind', 'document-hash', 'signature', 'payload'])('altered referenced descriptor %s fails before requesting a quote', async kind => {

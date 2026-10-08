@@ -366,7 +366,9 @@ export async function publicDemoResponse(request: Request, env: PublicDemoEnv): 
   const profiles = configuredProfiles(env, providerId);
   if (path === '/config' && request.method === 'GET') return new Response(JSON.stringify({ providerId, providerOrigin, limits: PUBLIC_DEMO, publishedServices: { enabled: profiles.length === 3, profiles } }), { headers });
   const metadataProfile = profiles.find(p => path === '/v1/provider/services/' + p.serviceId);
-  const get = request.method === 'GET' && (['/health', '/demo/status', '/v1/provider/descriptor', '/v1/provider/offers', `/v1/provider/services/${PUBLIC_DEMO.catalogService}`].includes(path) || Boolean(metadataProfile) || /^\/v1\/provider\/deals\/[a-zA-Z0-9_-]{1,128}$/.test(path));
+  // An active offer may reference an earlier signed descriptor; the ingress serves only current publication records.
+  const artifactHash = /^\/v1\/artifacts\/([0-9a-f]{64})$/.exec(path)?.[1];
+  const get = request.method === 'GET' && (['/health', '/demo/status', '/v1/provider/descriptor', '/v1/provider/offers', `/v1/provider/services/${PUBLIC_DEMO.catalogService}`].includes(path) || Boolean(metadataProfile) || Boolean(artifactHash) || /^\/v1\/provider\/deals\/[a-zA-Z0-9_-]{1,128}$/.test(path));
   const post = request.method === 'POST' && ['/v1/provider/quotes', '/v1/provider/deals'].includes(path);
   if (!get && !post) return reply(404, 'invalid_route', 'This operation is not part of the public demo.');
   const origin = request.headers.get('origin');
@@ -411,6 +413,7 @@ export async function publicDemoResponse(request: Request, env: PublicDemoEnv): 
       let result: unknown;
       try { result = JSON.parse(body); } catch { return reply(502, 'provider_unavailable', 'The provider returned an invalid response.'); }
       if (upstream.status === 200 && metadataProfile && !namedMetadata(result, metadataProfile)) return reply(502, 'provider_unavailable', 'The provider description does not match the configured public tool.');
+      if (upstream.status === 200 && artifactHash && !(record(result) && result.hash === artifactHash)) return reply(502, 'provider_unavailable', 'The provider returned a different artifact.');
       if (upstream.status === 201 && namedBody && path === '/v1/provider/quotes') {
         const profile = workProfile(namedBody, profiles)!;
         if (!finiteJson(result) || !namedQuoteClaims(result, profile) || result.payload.requester_id !== namedBody.requester_id || result.payload.expires_at < Math.floor(Date.now() / 1000)) return reply(502, 'provider_unavailable', 'The provider quote does not match the configured public tool.');

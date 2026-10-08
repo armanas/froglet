@@ -53,6 +53,22 @@ test('operator, runtime, legacy and caller-selected URLs are never forwarded', a
   expect(upstream).not.toHaveBeenCalled();
 });
 
+test('an exact signed artifact is read from the fixed provider and must match the requested hash', async () => {
+  const hash = 'd'.repeat(64);
+  const upstream = vi.fn(async () => new Response(JSON.stringify({ hash, kind: 'descriptor' })));
+  vi.stubGlobal('fetch', upstream);
+  expect((await worker.fetch(request('/v1/artifacts/' + hash), env() as any)).status).toBe(200);
+  expect((upstream.mock.calls[0][0] as Request).url).toBe(PUBLIC_DEMO.origin + '/v1/artifacts/' + hash);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ hash: 'e'.repeat(64), kind: 'descriptor' }))));
+  expect((await worker.fetch(request('/v1/artifacts/' + hash), env() as any)).status).toBe(502);
+  const refused = vi.fn(); vi.stubGlobal('fetch', refused);
+  for (const path of ['/v1/artifacts/' + 'D'.repeat(64), '/v1/artifacts/' + 'd'.repeat(63), '/v1/artifacts/' + hash + '/raw', '/v1/artifacts']) {
+    expect((await worker.fetch(request(path), env() as any)).status).toBe(404);
+  }
+  expect((await worker.fetch(request('/v1/artifacts/' + hash, 'POST', {}), env() as any)).status).toBe(404);
+  expect(refused).not.toHaveBeenCalled();
+});
+
 test('cross-site browser requests and exhausted edge rate limit are refused', async () => {
   const upstream = vi.fn(); vi.stubGlobal('fetch', upstream);
   expect((await worker.fetch(request('/health', 'GET', undefined, { origin: 'https://other.invalid' }), env() as any)).status).toBe(403);
