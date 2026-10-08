@@ -8,6 +8,7 @@ import {
 	formatAge,
 	hasShareLink,
 	isFree,
+	isPublicBetaOffer,
 	offerSignature,
 	offerTitle,
 	priceLabel,
@@ -16,6 +17,7 @@ import {
 	serviceAvailability,
 	type Category,
 } from './marketplace-model';
+import { publishedServiceProfiles, type PublishedServiceProfile } from './live-service-client';
 
 export { serviceAvailability } from './marketplace-model';
 
@@ -67,7 +69,10 @@ interface RenderContext {
 	providers: Map<string, MarketplaceProviderSummary>;
 	stale: boolean;
 	now: number;
+	profiles: readonly PublishedServiceProfile[];
 }
+
+const publicProfiles = new WeakMap<HTMLElement, readonly PublishedServiceProfile[]>();
 
 let itemCounter = 0;
 
@@ -110,7 +115,7 @@ function buildDetail(offer: MarketplaceOfferSummary, ctx: RenderContext, id: str
 
 	const side = h('div', 'mkt-detail__side');
 	const links: Array<[string, string]> = [];
-	const demoLink = publicDemoLink(offer);
+	const demoLink = publicDemoLink(offer, ctx.profiles, ctx.stale, ctx.now);
 	if (demoLink) links.push(['Try it', demoLink]);
 	if (link) links.push([`Open ${title}`, link], ['Share / QR', `${link}#share`]);
 	links.push(['How offers work', '/marketplace/overview/'], ['Verify a receipt', '/verify-receipt/']);
@@ -145,13 +150,14 @@ function buildItem(offer: MarketplaceOfferSummary, ctx: RenderContext): HTMLTabl
 	const provider = ctx.providers.get(offer.providerId);
 	const providerText = provider?.endpoint ? displayEndpoint(provider.endpoint) : compactId(offer.providerId);
 	const link = hasShareLink(offer) ? offer.sharePath! : '';
-	const demoLink = publicDemoLink(offer);
+	const demoLink = publicDemoLink(offer, ctx.profiles, ctx.stale, ctx.now);
 	const price = priceLabel(offer);
 	const detailId = `mkt-detail-${++itemCounter}`;
 
 	const item = h('tbody', 'mkt-item');
 	item.dataset.marketplaceSearchRow = '';
 	item.dataset.marketplaceKind = 'offer';
+	item.dataset.publicBeta = String(isPublicBetaOffer(offer));
 	item.dataset.ready = String(availability.ready);
 	item.dataset.free = String(free);
 	item.dataset.category = category;
@@ -250,6 +256,57 @@ function listItems(table: HTMLTableElement): HTMLTableSectionElement[] {
 	return Array.from(table.tBodies).filter((body) => body.classList.contains('mkt-item'));
 }
 
+function initArchiveControl(root: HTMLElement): void {
+	if (root.querySelector('[data-marketplace-archive]') || !root.querySelector('[data-marketplace-service-list]')) return;
+	const fieldset = h('fieldset', 'mkt-toggles');
+	fieldset.append(h('legend', '', 'Catalog scope'));
+	const label = h('label', 'mkt-toggle-row');
+	const input = h('input');
+	input.type = 'checkbox';
+	input.dataset.marketplaceArchive = '';
+	const caption = h('span', '', 'Include archived / unqualified offers');
+	caption.dataset.marketplaceArchiveLabel = '';
+	label.append(input, caption);
+	fieldset.append(label);
+	const explanation = h('p', 'mkt-help', 'Public beta entries appear first. Older and internal entries remain available in the archive and technical evidence; their availability is not assumed.');
+	const side = root.querySelector('.mkt-side');
+	if (side) side.append(fieldset, explanation);
+	else root.querySelector('[data-marketplace-service-list]')?.parentElement?.before(fieldset, explanation);
+}
+
+function updateCatalogScope(root: HTMLElement): void {
+	const items = Array.from(root.querySelectorAll<HTMLElement>('tbody.mkt-item'));
+	const beta = items.filter(item => item.dataset.publicBeta === 'true').length;
+	const archived = items.length - beta;
+	const includeArchive = root.querySelector<HTMLInputElement>('[data-marketplace-archive]')?.checked ?? false;
+	setText(root, '[data-marketplace-archive-label]', `Include archived / unqualified offers (${archived})`);
+	const word = (count: number) => `offer${count === 1 ? '' : 's'}`;
+	const indexed = Number(root.dataset.indexedOffers ?? items.length);
+	setText(root, '[data-marketplace-field="scope"]', `Public beta: ${beta} loaded ${word(beta)}. Archive: ${archived} loaded ${word(archived)}. Index: ${indexed} ${word(indexed)}; ${root.dataset.loadedOffers ?? items.length} loaded. ${includeArchive ? 'Archive included.' : 'Showing public beta entries.'} Search and filters cover loaded offers only.`);
+	for (const count of root.querySelectorAll<HTMLElement>('[data-marketplace-category-count]')) {
+		const category = count.dataset.marketplaceCategoryCount;
+		count.textContent = String(items.filter(item => (includeArchive || item.dataset.publicBeta === 'true') && (category === 'all' || item.dataset.category === category)).length);
+	}
+}
+
+function syncPublicActions(item: HTMLElement, offer: MarketplaceOfferSummary, ctx: RenderContext): boolean {
+	const href = publicDemoLink(offer, ctx.profiles, ctx.stale, ctx.now);
+	const links = Array.from(item.querySelectorAll<HTMLAnchorElement>('[data-marketplace-public-demo]'));
+	if ((!href && links.length === 0) || (href && links.length === 2 && links.every(link => link.getAttribute('href') === href))) return false;
+	links.forEach(link => link.remove());
+	if (href) {
+		const title = offerTitle(offer);
+		for (const [selector, className] of [['.mkt-actions', 'service-open mkt-pill mkt-pill--primary'], ['.mkt-detail__side', '']] as const) {
+			const anchor = h('a', className, 'Try it');
+			anchor.href = href;
+			anchor.dataset.marketplacePublicDemo = '';
+			anchor.setAttribute('aria-label', `Try ${title} in the public beta`);
+			item.querySelector(selector)?.prepend(anchor);
+		}
+	}
+	return true;
+}
+
 function applySort(root: HTMLElement): void {
 	const table = root.querySelector<HTMLTableElement>('[data-marketplace-service-list]');
 	if (!table) return;
@@ -279,7 +336,7 @@ function renderServiceList(root: HTMLElement, snapshot: MarketplaceSnapshot, sta
 	const table = root.querySelector<HTMLTableElement>('[data-marketplace-service-list]');
 	if (!table) return;
 	const now = Date.now();
-	const ctx: RenderContext = { providers: new Map(snapshot.providers.map((provider) => [provider.providerId, provider])), stale, now };
+	const ctx: RenderContext = { providers: new Map(snapshot.providers.map((provider) => [provider.providerId, provider])), stale, now, profiles: publicProfiles.get(root) ?? [] };
 	// Renewed checks rebuild the facts; keep the visitor's disclosure state by service identity.
 	const expanded = new Set(listItems(table)
 		.filter((item) => item.querySelector('[data-marketplace-toggle]')?.getAttribute('aria-expanded') === 'true')
@@ -313,12 +370,11 @@ function renderServiceList(root: HTMLElement, snapshot: MarketplaceSnapshot, sta
 
 	const shared = snapshot.offers.filter(hasShareLink).length;
 	root.dataset.sharedCount = String(shared);
+	root.dataset.loadedOffers = String(snapshot.offers.length);
+	root.dataset.indexedOffers = String(snapshot.offerCount);
 	setText(root, '[data-marketplace-field="sharedServices"]', shared);
 	setText(root, '[data-marketplace-field="recentServices"]', snapshot.offers.filter((offer) => serviceAvailability(offer, stale, now).ready).length);
-	setText(root, '[data-marketplace-field="scope"]',
-		snapshot.offerCount > snapshot.offers.length
-			? `Showing ${snapshot.offers.length} of ${snapshot.offerCount} indexed offers. Search and filters cover only the offers loaded here.`
-			: `Showing all ${snapshot.offers.length} indexed offer${snapshot.offers.length === 1 ? '' : 's'}.`);
+	updateCatalogScope(root);
 }
 
 /** Time changes availability without changing the catalog or replacing its open controls. */
@@ -332,6 +388,7 @@ function syncServiceAvailability(root: HTMLElement, snapshot: MarketplaceSnapsho
 		const key = `${offer.providerId}:${offer.offerId}`;
 		const item = items.get(key);
 		const badge = item?.querySelector<HTMLElement>('.service-availability');
+		if (item && syncPublicActions(item, offer, { providers: new Map(), stale, now, profiles: publicProfiles.get(root) ?? [] })) changed = true;
 		if (!item || !badge || (badge.textContent === availability.label && badge.dataset.state === availability.state && item.dataset.ready === String(availability.ready))) continue;
 		changed = true;
 		item.dataset.ready = badge.dataset.ready = String(availability.ready);
@@ -537,11 +594,12 @@ function searchableText(element: HTMLElement): string {
 	return `${element.dataset.searchText || ''} ${element.textContent || ''}`.toLowerCase();
 }
 
-function readFilters(root: HTMLElement): { category: string; ready: boolean; free: boolean } {
+function readFilters(root: HTMLElement): { category: string; ready: boolean; free: boolean; archive: boolean } {
 	return {
 		category: root.querySelector<HTMLInputElement>('[data-marketplace-categories] input:checked')?.value ?? 'all',
 		ready: root.querySelector<HTMLInputElement>('[data-marketplace-filter="ready"]')?.checked ?? false,
 		free: root.querySelector<HTMLInputElement>('[data-marketplace-filter="free"]')?.checked ?? false,
+		archive: root.querySelector<HTMLInputElement>('[data-marketplace-archive]')?.checked ?? false,
 	};
 }
 
@@ -589,7 +647,7 @@ function initMarketplaceSearch(root: HTMLElement): () => void {
 
 	const apply = () => {
 		const terms = input.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
-		const { category, ready, free } = readFilters(root);
+		const { category, ready, free, archive } = readFilters(root);
 		const rows = Array.from(root.querySelectorAll<HTMLElement>('[data-marketplace-search-row]'));
 		let shown = 0;
 		for (const row of rows) {
@@ -597,6 +655,7 @@ function initMarketplaceSearch(root: HTMLElement): () => void {
 			const isOffer = row.dataset.marketplaceKind === 'offer';
 			const visible = matches && (!isOffer
 				|| ((category === 'all' || row.dataset.category === category)
+					&& (archive || row.dataset.publicBeta === 'true')
 					&& (!ready || row.dataset.ready === 'true')
 					&& (!free || row.dataset.free === 'true')));
 			row.hidden = !visible;
@@ -604,17 +663,19 @@ function initMarketplaceSearch(root: HTMLElement): () => void {
 		}
 
 		const loaded = root.dataset.catalogLoaded === 'true';
-		const noShared = loaded && Number(root.dataset.sharedCount ?? 0) === 0 && (category === 'all' || category === 'service');
+		const scopedRows = rows.filter(row => row.dataset.marketplaceKind === 'offer' && (archive || row.dataset.publicBeta === 'true'));
+		const noShared = loaded && !scopedRows.some(row => row.dataset.category === 'service') && (category === 'all' || category === 'service');
 		setBanner(root, !loaded && root.dataset.status === 'unavailable' ? 'error' : noShared ? 'empty' : 'none');
 		const empty = root.querySelector<HTMLElement>('[data-marketplace-no-results]');
 		const hasOffers = rows.some((row) => row.dataset.marketplaceKind === 'offer');
 		if (empty) empty.hidden = !loaded || shown !== 0 || !hasOffers || (category === 'service' && noShared);
 		if (count) count.textContent = loaded ? `${shown} service${shown === 1 ? '' : 's'}` : (root.dataset.status === 'unavailable' ? 'Unavailable' : 'Loading');
+		if (loaded) updateCatalogScope(root);
 	};
 
 	input.addEventListener('input', apply);
 	root.addEventListener('change', (event) => {
-		if ((event.target as HTMLElement | null)?.matches('[data-marketplace-filter], [data-marketplace-categories] input')) apply();
+		if ((event.target as HTMLElement | null)?.matches('[data-marketplace-filter], [data-marketplace-archive], [data-marketplace-categories] input')) apply();
 	});
 	form?.addEventListener('click', () => input.focus());
 	root.querySelector('[data-marketplace-reset]')?.addEventListener('click', () => {
@@ -759,6 +820,7 @@ function renderSnapshot(root: HTMLElement, snapshot: MarketplaceSnapshot, flash:
 export function initMarketplaceLive(): void {
 	const root = document.querySelector<HTMLElement>('[data-marketplace-live]');
 	if (!root) return;
+	initArchiveControl(root);
 	const applySearch = initMarketplaceSearch(root);
 	initMarketplaceEvidenceActions(root);
 	let lastSnapshot: MarketplaceSnapshot | undefined;
@@ -766,6 +828,20 @@ export function initMarketplaceLive(): void {
 	let nextRefreshAt = Date.now() + REFRESH_MS;
 	// A failed refresh stays stale until a successful snapshot, even while the clock ticks.
 	let renderedStale: boolean | undefined;
+	// This is local Worker metadata, not an additional marketplace/provider request.
+	if (root.querySelector('[data-marketplace-service-list]')) void (async () => {
+		try {
+			const response = await fetch('/api/public-demo/config', { cache: 'no-store', signal: AbortSignal.timeout(12_000), headers: { accept: 'application/json' } });
+			if (!response.ok) return;
+			const profiles = publishedServiceProfiles(await response.json());
+			if (profiles.length === 0) return;
+			publicProfiles.set(root, profiles);
+			if (lastSnapshot) {
+				renderServiceList(root, lastSnapshot, Boolean(renderedStale), false);
+				applySearch();
+			}
+		} catch { /* Disabled, malformed or unavailable metadata never enables named actions. */ }
+	})();
 	const syncAvailability = (now = Date.now()) => {
 		if (!lastSnapshot || !syncServiceAvailability(root, lastSnapshot, Boolean(renderedStale), now)) return;
 		const focused = document.activeElement;

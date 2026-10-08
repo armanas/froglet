@@ -15,6 +15,7 @@ import {
   priceLabel,
   priceSortKey,
   publicDemoLink,
+  isPublicBetaOffer,
   serviceAvailability,
 } from '../marketplace-model';
 
@@ -70,6 +71,40 @@ describe('public beta actions', () => {
     { availability: { admission: 'invitation_required', status: 'healthy', lastCheckedAt: 100, leaseExpiresAt: 200 } },
   ])('refuses a different identity, workload or access policy: %j', change => {
     expect(publicDemoLink({ ...compute(), ...change })).toBeUndefined();
+  });
+});
+
+describe('curated public beta and exact published actions', () => {
+  const profile = { serviceId: 'marketplace-provider', offerId: 'marketplace-provider', offerHash: 'd'.repeat(64), bindingHash: '2'.repeat(64), revisionHash: 'f'.repeat(64), operationHash: '1'.repeat(64), moduleHash: '2'.repeat(64), descriptorHash: '3'.repeat(64), entrypoint: 'run' };
+  const named = () => offer({ providerId: PUBLIC_DEMO.providerId, offerId: profile.offerId, offerKind: 'compute.execution.v1', runtime: 'wasm', packageKind: 'inline_module', artifactHash: profile.offerHash, availability: { status: 'healthy', admission: 'execution_checked', lastCheckedAt: 100, leaseExpiresAt: 200 } });
+
+  it('keeps only current supported C7 forms in the default scope, without inventing readiness', () => {
+    expect(isPublicBetaOffer(offer({ providerId: PUBLIC_DEMO.providerId, offerId: PUBLIC_DEMO.computeOffer, offerKind: 'compute.wasm.v1', runtime: 'wasm', packageKind: 'inline_module' }))).toBe(true);
+    expect(isPublicBetaOffer(offer({ providerId: PUBLIC_DEMO.providerId, offerId: PUBLIC_DEMO.catalogService, offerKind: PUBLIC_DEMO.catalogService, runtime: 'builtin', packageKind: 'builtin' }))).toBe(true);
+    expect(isPublicBetaOffer(named())).toBe(true);
+    expect(isPublicBetaOffer(named())).toBe(true);
+    expect(isPublicBetaOffer({ ...named(), providerId: provider })).toBe(false);
+    expect(isPublicBetaOffer({ ...named(), artifactHash: 'a'.repeat(64) })).toBe(true);
+    expect(isPublicBetaOffer(offer({ providerId: PUBLIC_DEMO.providerId, offerId: 'events.query' }))).toBe(false);
+  });
+
+  it('links the exact configured free named offer only while execution checking remains current', () => {
+    expect(publicDemoLink(named(), [profile], false, 150_000)).toBe('/services/?service=marketplace-provider#try-it');
+    expect(publicDemoLink(named(), [], false, 150_000)).toBeUndefined();
+    expect(publicDemoLink(named(), [profile], true, 150_000)).toBeUndefined();
+    expect(publicDemoLink(named(), [profile], false, 200_000)).toBeUndefined();
+  });
+
+  it.each([
+    { providerId: provider }, { artifactHash: 'a'.repeat(64) }, { offerId: 'events.query' }, { serviceId: 'events.query' },
+    { offerKind: 'compute.wasm.v1' }, { runtime: 'builtin' }, { packageKind: 'builtin' },
+    { settlementMethod: 'lightning' }, { pricingKnown: false }, { baseFeeMsat: 1 }, { successFeeMsat: 1 },
+    { availability: { status: 'unknown', admission: 'execution_checked', lastCheckedAt: 100, leaseExpiresAt: 200 } },
+    { availability: { status: 'healthy', admission: 'unknown', lastCheckedAt: 100, leaseExpiresAt: 200 } },
+    { availability: { status: 'healthy', admission: 'invitation_required', lastCheckedAt: 100, leaseExpiresAt: 200 } },
+    { availability: { status: 'healthy', admission: 'execution_checked', lastCheckedAt: 250, leaseExpiresAt: 300 } },
+  ])('refuses a wrong binding, workload, price or execution lease: %j', change => {
+    expect(publicDemoLink({ ...named(), ...change }, [profile], false, 150_000)).toBeUndefined();
   });
 });
 

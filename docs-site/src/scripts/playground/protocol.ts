@@ -72,7 +72,7 @@ export function hasNonFiniteNumber(value: unknown): boolean {
  * The workload that calls a published function by name, built from its service record the way the project's JS client
  * does (`buildServiceAddressedExecution`). Its hash is the `workload_hash` in the quote and the deal.
  */
-export function executionFor(service: ServiceRecord, input: unknown, kernel: Kernel) {
+export function executionFor(service: ServiceRecord, input: unknown, kernel: Kernel, requestedAccess: readonly string[] = []) {
   return {
     schema_version: SCHEMA_VERSION,
     workload_kind: WORKLOAD_KIND_EXECUTION,
@@ -85,6 +85,7 @@ export function executionFor(service: ServiceRecord, input: unknown, kernel: Ker
     security: { mode: 'standard', service_id: service.service_id },
     input,
     module_hash: service.binding_hash,
+    ...(requestedAccess.length ? { requested_access: [...requestedAccess] } : {}),
   };
 }
 

@@ -1,9 +1,10 @@
 import compilerUrl from '../generated/assemblyscript/asc.js?url';
-import { PUBLIC_DEMO_PREFIX } from '../data/public-demo-config';
+import { PUBLIC_DEMO, PUBLIC_DEMO_PREFIX } from '../data/public-demo-config';
 import { browserCompilerWorker, createCompiler } from './playground/compiler';
 import { FUNCTIONS } from './playground/functions';
 import { loadKernel, loadPlaygroundVerifier } from './playground/kernel';
-import { prepareLiveRun, resumeLiveRun, exportLiveEvidence, type LiveDeps, type LiveRun } from './live-service-client';
+import { prepareLiveRun, preparePublishedServiceRun, publishedServiceProfiles, resumeLiveRun, exportLiveEvidence, type LiveDeps, type LiveRun } from './live-service-client';
+import { verify_service_link_evidence_json } from '../generated/verifier/froglet_verify.js';
 
 const STORAGE = 'froglet-public-demo.pending.v1';
 const label: Record<string, string> = { discover: 'Checking Bob’s signed offer…', quote: 'Agreeing on the exact work…', deal: 'Sending your signed request…', result: 'Bob is running the job…', verify: 'Checking the signed result…' };
@@ -23,6 +24,10 @@ export function startLiveServices(scope: ParentNode = document): void {
   const code = one<HTMLTextAreaElement>('[data-program-source]');
   const input = one<HTMLTextAreaElement>('[data-program-input]');
   const capacity = one<HTMLElement>('[data-demo-capacity]');
+  const publishedBox = root.querySelector<HTMLElement>('[data-published-tools]');
+  const publishedButton = root.querySelector<HTMLButtonElement>('[data-run-published]');
+  const publishedSelect = root.querySelector<HTMLSelectElement>('[data-published-service]');
+  const publishedInput = root.querySelector<HTMLTextAreaElement>('[data-published-input]');
   const compiler = createCompiler({ spawn: browserCompilerWorker, compilerUrl: new URL(compilerUrl, location.href).href });
   const adder = FUNCTIONS.find(f => f.id === 'adder')!;
   code.value = adder.code;
@@ -42,6 +47,7 @@ export function startLiveServices(scope: ParentNode = document): void {
   const buttons = () => {
     runButton.disabled = queryButton.disabled = failureButton.disabled = busy || !deps;
     retry.disabled = busy || !deps || !pending;
+    if (publishedButton) publishedButton.disabled = busy || !deps || !deps.publishedServices?.length;
   };
   const transport: LiveDeps['transport'] = async ({ method, path, body }) => {
     const response = await fetch(PUBLIC_DEMO_PREFIX + path, { method, headers: body === undefined ? {} : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store', signal: control.signal });
@@ -75,16 +81,16 @@ export function startLiveServices(scope: ParentNode = document): void {
     one<HTMLTextAreaElement>('[data-exchange-json]').value = JSON.stringify(evidence, null, 2);
     one<HTMLDetailsElement>('[data-exchange-export]').hidden = false;
     receipt.disabled = false;
-    one<HTMLElement>('[data-program-commitment]').textContent = run.request.kind === 'wasm' ? `Program SHA-256: ${run.request.submission.workload.module_hash}` : 'The lookup used Bob’s published synthetic snapshot.';
+    one<HTMLElement>('[data-program-commitment]').textContent = run.publishedService ? `Published program SHA-256: ${run.publishedService.profile.moduleHash}` : run.request.kind === 'wasm' ? `Program SHA-256: ${run.request.submission.workload.module_hash}` : 'The lookup used Bob’s published synthetic snapshot.';
     pending = undefined;
     try { sessionStorage.removeItem(STORAGE); } catch { /* No saved credential is involved. */ }
     one<HTMLElement>('[data-recovery-note]').textContent = outcome.status === 'succeeded'
-      ? 'The browser checked the signatures and the result commitment. This is evidence of Bob’s report, not scientific validation.'
+      ? run.publishedService ? 'The browser checked the published contract, signatures and result commitment. This verifies Bob’s report, not the truth of the catalog data.' : 'The browser checked the signatures and the result commitment. This is evidence of Bob’s report, not scientific validation.'
       : 'The browser checked the signatures and the signed failure receipt. This verifies Bob’s failure report.';
     await updateCapacity();
   }
 
-  async function run(kind: 'program' | 'catalog' | 'failure') {
+  async function run(kind: 'program' | 'catalog' | 'failure' | 'published') {
     if (busy || !deps) return;
     if (pending) {
       status.textContent = 'Recover the previous job first, or explicitly discard its local reference.';
@@ -98,7 +104,11 @@ export function startLiveServices(scope: ParentNode = document): void {
     try {
       let module: Uint8Array | undefined;
       let text: string;
-      if (kind === 'catalog') {
+      if (kind === 'published') {
+        const prepared = await preparePublishedServiceRun(deps, publishedSelect!.value, publishedInput!.value);
+        if (!disposed) await finish(prepared);
+        return;
+      } else if (kind === 'catalog') {
         const term = one<HTMLSelectElement>('[data-query-term]').value;
         text = JSON.stringify({ op: 'select', collection: 'terminology', columns: ['source', 'target'], limit: 100, ...(term ? { equals: { source: term } } : {}) });
       } else {
@@ -119,6 +129,11 @@ export function startLiveServices(scope: ParentNode = document): void {
   runButton.addEventListener('click', () => void run('program'), { signal: control.signal });
   queryButton.addEventListener('click', () => void run('catalog'), { signal: control.signal });
   failureButton.addEventListener('click', () => void run('failure'), { signal: control.signal });
+  publishedButton?.addEventListener('click', () => void run('published'), { signal: control.signal });
+  const publishedExample = () => {
+    if (publishedInput && publishedSelect) publishedInput.value = JSON.stringify(publishedSelect.value === 'marketplace-provider' ? { provider_id: PUBLIC_DEMO.providerId } : publishedSelect.value === 'marketplace-search' ? { provider_id: PUBLIC_DEMO.providerId, availability: 'healthy', limit: 10 } : { provider_id: PUBLIC_DEMO.providerId, limit: 10 }, null, 2);
+  };
+  publishedSelect?.addEventListener('change', () => { if (!busy) publishedExample(); }, { signal: control.signal });
   retry.addEventListener('click', async () => {
     if (busy || !deps || !pending) return;
     busy = true; buttons();
@@ -149,7 +164,15 @@ export function startLiveServices(scope: ParentNode = document): void {
       if (!configResponse.ok) throw new Error(config.error ?? 'The hosted demo is not active yet.');
       const [kernel, verifier] = await Promise.all([loadKernel(), loadPlaygroundVerifier()]);
       if (disposed) return;
-      deps = { kernel, verifier, transport, providerId: config.providerId, save, onStep: step => { if (!disposed) status.textContent = label[step]; } };
+      const publishedServices = publishedServiceProfiles(config);
+      deps = { kernel, verifier, transport, providerId: config.providerId, save, publishedServices, verifyPublication: (revision, offer, descriptor) => JSON.parse(verify_service_link_evidence_json(JSON.stringify({ publication_revision: revision, offer, descriptor }))), onStep: step => { if (!disposed) status.textContent = label[step]; } };
+      if (publishedBox && publishedSelect && publishedInput && publishedServices.length) {
+        publishedBox.hidden = false;
+        const selected = new URL(location.href).searchParams.getAll('service');
+        if (selected.length === 1 && publishedServices.some(p => p.serviceId === selected[0])) publishedSelect.value = selected[0];
+        publishedExample();
+        one<HTMLElement>('[data-published-status]').textContent = 'The published program and operation are pinned. Your browser verifies the current contract before requesting work.';
+      }
       try {
         const saved = sessionStorage.getItem(STORAGE);
         if (saved) { const run = JSON.parse(saved); if (run.providerId === config.providerId) pending = run; }

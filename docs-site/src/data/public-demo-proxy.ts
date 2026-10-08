@@ -1,10 +1,12 @@
-import { PUBLIC_DEMO, PUBLIC_DEMO_PREFIX, PUBLIC_MARKETPLACE_READ } from './public-demo-config';
+import { PUBLIC_DEMO, PUBLIC_DEMO_PREFIX, PUBLIC_MARKETPLACE_READ, publishedServiceProfiles, type PublishedServiceProfile } from './public-demo-config';
 
 export interface PublicDemoEnv {
   FROGLET_PUBLIC_DEMO_ENABLED?: string;
   FROGLET_PUBLIC_DEMO_PROVIDER_ID?: string;
   FROGLET_PUBLIC_DEMO_ORIGIN?: string;
   FROGLET_PUBLIC_MARKETPLACE_READ_ENABLED?: string;
+  FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_ENABLED?: string;
+  FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_JSON?: string;
   PUBLIC_DEMO_RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
 
@@ -130,8 +132,8 @@ export async function publicMarketplaceReadResponse(request: Request, env: Publi
   finally { clearTimeout(timer!); }
 }
 
-// Cancellation is attempted but its acknowledgement never extends a read's
-// deadline or delays a known 404/error. The classic C7 path retains its wait.
+// Cancellation is attempted without extending the read/transport deadline or
+// delaying a known redirect/error response.
 function cancelReadBody(body: { cancel(): Promise<unknown> } | null | undefined): void {
   try { if (body) void body.cancel().catch(() => {}); } catch { /* Best effort; no credential diagnostics. */ }
 }
@@ -180,6 +182,126 @@ function finiteJson(x: unknown, depth = 0): boolean {
   return true;
 }
 
+const exactKeys = (value: Record<string, any>, names: string[]) => Object.keys(value).length === names.length && keys(value, names);
+const operationGrant = (p: PublishedServiceProfile) => 'net.http.operation.' + p.operationHash;
+const exactGrant = (grants: unknown, p: PublishedServiceProfile) => Array.isArray(grants) && grants.length === 1 && grants[0] === operationGrant(p);
+
+/** Operator-owned public pins, never a caller-supplied host, program or credential. */
+function configuredProfiles(env: PublicDemoEnv, providerId: string): PublishedServiceProfile[] {
+  if (env.FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_ENABLED !== 'true' || providerId !== PUBLIC_DEMO.providerId) return [];
+  const text = env.FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_JSON;
+  if (typeof text !== 'string' || new TextEncoder().encode(text).length > 8192) return [];
+  try {
+    const value: unknown = JSON.parse(text);
+    if (!record(value) || !exactKeys(value, ['providerId', 'profiles'])) return [];
+    const profiles = publishedServiceProfiles({ providerId: value.providerId, publishedServices: { enabled: true, profiles: value.profiles } });
+    if (new Set(profiles.map(p => p.offerHash)).size !== 3 || new Set(profiles.map(p => p.revisionHash)).size !== 3) return [];
+    return profiles;
+  } catch { return []; }
+}
+
+function workProfile(body: Record<string, any>, profiles: readonly PublishedServiceProfile[]): PublishedServiceProfile | undefined {
+  return body.kind === 'execution' && record(body.execution?.security) ? profiles.find(p => p.serviceId === body.execution.security.service_id) : undefined;
+}
+
+function namedWork(body: Record<string, any>, profile: PublishedServiceProfile): boolean {
+  const e = body.execution;
+  return body.kind === 'execution' && record(e) && exactKeys(e, ['schema_version', 'workload_kind', 'runtime', 'package_kind', 'entrypoint', 'contract_version', 'input_format', 'input_hash', 'security', 'input', 'module_hash', 'requested_access']) &&
+    e.schema_version === 'froglet/v1' && e.workload_kind === 'compute.execution.v1' && e.runtime === 'wasm' && e.package_kind === 'inline_module' &&
+    e.contract_version === 'froglet.wasm.host_json.v1' && e.input_format === 'application/json+jcs' && hex(e.input_hash) && e.module_hash === profile.bindingHash &&
+    record(e.entrypoint) && exactKeys(e.entrypoint, ['kind', 'value']) && e.entrypoint.kind === 'module' && e.entrypoint.value === profile.entrypoint &&
+    record(e.security) && exactKeys(e.security, ['mode', 'service_id']) && e.security.mode === 'standard' && e.security.service_id === profile.serviceId &&
+    exactGrant(e.requested_access, profile) && new TextEncoder().encode(JSON.stringify(e.input)).length <= PUBLIC_MARKETPLACE_READ.maxRequestBytes &&
+    Boolean(readTarget(profile.serviceId.slice('marketplace-'.length) as ReadOperation, e.input));
+}
+
+function namedLimits(limits: unknown): boolean {
+  return record(limits) && exactKeys(limits, ['max_runtime_ms', 'max_memory_bytes', 'fuel_limit', 'max_input_bytes', 'max_output_bytes']) &&
+    Number.isSafeInteger(limits.max_runtime_ms) && limits.max_runtime_ms > 0 && limits.max_runtime_ms <= PUBLIC_DEMO.maxRuntimeMs &&
+    Number.isSafeInteger(limits.max_memory_bytes) && limits.max_memory_bytes > 0 && limits.max_memory_bytes <= PUBLIC_DEMO.maxMemoryBytes &&
+    Number.isSafeInteger(limits.fuel_limit) && limits.fuel_limit > 0 && limits.fuel_limit <= PUBLIC_DEMO.maxFuel &&
+    Number.isSafeInteger(limits.max_input_bytes) && limits.max_input_bytes > 0 && limits.max_input_bytes <= PUBLIC_MARKETPLACE_READ.maxRequestBytes &&
+    Number.isSafeInteger(limits.max_output_bytes) && limits.max_output_bytes > 0 && limits.max_output_bytes <= PUBLIC_MARKETPLACE_READ.maxResponseBytes;
+}
+
+// These are transport policy checks, not cryptographic verification. Native
+// admission checks signatures and actual commitments; the browser checks its
+// received evidence independently with the Rust verifier.
+function envelopeShape(value: unknown, kind: 'quote' | 'deal'): value is Record<string, any> {
+  return record(value) && exactKeys(value, ['schema_version', 'artifact_type', 'created_at', 'hash', 'payload_hash', 'payload', 'signer', 'signature']) &&
+    value.schema_version === 'froglet/v1' && value.artifact_type === kind && nonnegativeInteger(value.created_at) && hex(value.hash) && hex(value.payload_hash) && hex(value.signer) &&
+    typeof value.signature === 'string' && /^[a-f0-9]{128}$/.test(value.signature) && record(value.payload);
+}
+
+function namedQuoteClaims(quote: unknown, profile: PublishedServiceProfile): quote is Record<string, any> {
+  if (!envelopeShape(quote, 'quote')) return false;
+  const q = quote.payload, t = q.settlement_terms;
+  return exactKeys(q, ['provider_id', 'requester_id', 'descriptor_hash', 'offer_hash', 'expires_at', 'workload_kind', 'workload_hash', 'capabilities_granted', 'settlement_terms', 'execution_limits']) &&
+    quote.signer === PUBLIC_DEMO.providerId && q.provider_id === PUBLIC_DEMO.providerId && hex(q.requester_id) && q.descriptor_hash === profile.descriptorHash && q.offer_hash === profile.offerHash &&
+    nonnegativeInteger(q.expires_at) && q.workload_kind === 'compute.execution.v1' && hex(q.workload_hash) && exactGrant(q.capabilities_granted, profile) && namedLimits(q.execution_limits) &&
+    record(t) && exactKeys(t, ['method', 'destination_identity', 'base_fee_msat', 'success_fee_msat', 'max_base_invoice_expiry_secs', 'max_success_hold_expiry_secs', 'min_final_cltv_expiry']) &&
+    t.method === 'none' && t.destination_identity === '' && t.base_fee_msat === 0 && t.success_fee_msat === 0 && t.max_base_invoice_expiry_secs === 0 && t.max_success_hold_expiry_secs === 0 && t.min_final_cltv_expiry === 0;
+}
+
+function namedPost(path: string, body: Record<string, any>, profile: PublishedServiceProfile): boolean {
+  if (!finiteJson(body) || !namedWork(body, profile)) return false;
+  if (path === '/v1/provider/quotes') return exactKeys(body, ['offer_id', 'requester_id', 'kind', 'execution', 'max_price_sats']) && body.offer_id === profile.offerId && hex(body.requester_id) && body.max_price_sats === 0;
+  if (!exactKeys(body, ['quote', 'deal', 'kind', 'execution', 'idempotency_key']) || typeof body.idempotency_key !== 'string' || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(body.idempotency_key) || !namedQuoteClaims(body.quote, profile) || !envelopeShape(body.deal, 'deal')) return false;
+  const q = body.quote, d = body.deal, p = d.payload;
+  return exactKeys(p, ['provider_id', 'requester_id', 'quote_hash', 'workload_hash', 'success_payment_hash', 'admission_deadline', 'completion_deadline', 'acceptance_deadline']) &&
+    p.provider_id === PUBLIC_DEMO.providerId && p.requester_id === q.payload.requester_id && d.signer === p.requester_id && p.quote_hash === q.hash && p.workload_hash === q.payload.workload_hash && hex(p.success_payment_hash) &&
+    nonnegativeInteger(p.admission_deadline) && nonnegativeInteger(p.completion_deadline) && nonnegativeInteger(p.acceptance_deadline) && p.admission_deadline <= q.payload.expires_at && p.admission_deadline <= p.completion_deadline && p.completion_deadline <= p.acceptance_deadline &&
+    new TextEncoder().encode(JSON.stringify(body.execution.input)).length <= q.payload.execution_limits.max_input_bytes;
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((value, i) => sameJson(value, b[i]));
+  if (record(a) && record(b)) return Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(key => Object.hasOwn(b, key) && sameJson(a[key], b[key]));
+  return false;
+}
+
+const publicBuildText = (value: unknown) => typeof value === 'string' && value.length > 0 && new TextEncoder().encode(value).length <= 128 && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+function publicBuildEvidence(value: unknown, profile: PublishedServiceProfile): boolean {
+  if (value === undefined) return true; // Existing readable revisions may predate build evidence.
+  if (!record(value) || !keys(value, ['schema_version', 'builder', 'builder_version', 'source_digest', 'artifact_digest', 'dependency_mode', 'components', 'hermetic'])) return false;
+  const components = value.components === undefined ? [] : value.components;
+  return value.schema_version === 'froglet.publication-build-evidence.v1' && publicBuildText(value.builder) && publicBuildText(value.builder_version) && hex(value.source_digest) && value.artifact_digest === profile.moduleHash &&
+    ['none', 'locked', 'unresolved'].includes(value.dependency_mode) && typeof value.hermetic === 'boolean' && !(value.hermetic && value.dependency_mode === 'unresolved') &&
+    Array.isArray(components) && components.length <= 128 && (value.dependency_mode === 'locked' ? components.length > 0 : components.length === 0) &&
+    components.every(c => record(c) && exactKeys(c, ['role', 'name', 'version', 'digest']) && publicBuildText(c.role) && publicBuildText(c.name) && publicBuildText(c.version) && hex(c.digest));
+}
+
+function publicVerificationEvidence(value: unknown): boolean {
+  return record(value) && keys(value, ['input_hash', 'result_hash', 'expected_output_matched']) && hex(value.input_hash) && hex(value.result_hash) && (value.expected_output_matched === undefined || value.expected_output_matched === true);
+}
+
+function publicStarter(value: unknown, profile: PublishedServiceProfile): boolean {
+  if (typeof value !== 'string' || new TextEncoder().encode(value).length > PUBLIC_MARKETPLACE_READ.maxRequestBytes) return false;
+  try { return Boolean(readTarget(profile.serviceId.slice('marketplace-'.length) as ReadOperation, JSON.parse(value))); }
+  catch { return false; }
+}
+
+function namedMetadata(body: unknown, profile: PublishedServiceProfile): boolean {
+  if (!record(body) || !keys(body, ['service', 'execution_access', 'publication_revision']) || !finiteJson(body) || !['open', 'trial'].includes(body.execution_access)) return false;
+  const s = body.service, r = body.publication_revision, p = r?.payload, i = p?.service, price = p?.price;
+  const operation = PUBLIC_MARKETPLACE_READ.operations[profile.serviceId.slice('marketplace-'.length) as ReadOperation];
+  return record(s) && keys(s, ['service_id', 'offer_id', 'offer_kind', 'resource_kind', 'project_id', 'summary', 'runtime', 'package_kind', 'entrypoint_kind', 'entrypoint', 'contract_version', 'mounts', 'capabilities', 'mode', 'price_sats', 'base_fee_msat', 'success_fee_msat', 'settlement_method', 'price_currency', 'publication_state', 'provider_id', 'module_hash', 'binding_hash', 'starter', 'input_schema', 'output_schema']) &&
+    s.provider_id === PUBLIC_DEMO.providerId && s.service_id === profile.serviceId && s.offer_id === profile.offerId && s.offer_kind === 'compute.execution.v1' && s.resource_kind === 'service' && (s.price_currency === undefined || s.price_currency === 'sat') && s.publication_state === 'active' &&
+    s.runtime === 'wasm' && s.package_kind === 'inline_module' && s.entrypoint_kind === 'module' && s.entrypoint === profile.entrypoint && s.contract_version === 'froglet.wasm.host_json.v1' && s.mode === 'sync' &&
+    s.module_hash === profile.moduleHash && s.binding_hash === profile.bindingHash && exactGrant(s.capabilities, profile) && (s.mounts === undefined || Array.isArray(s.mounts) && s.mounts.length === 0) &&
+    s.price_sats === 0 && s.base_fee_msat === 0 && s.success_fee_msat === 0 && s.settlement_method === 'none' &&
+    record(r) && exactKeys(r, ['revision_hash', 'signer_pubkey', 'signature', 'payload']) && r.revision_hash === profile.revisionHash && r.signer_pubkey === PUBLIC_DEMO.providerId && typeof r.signature === 'string' && /^[a-f0-9]{128}$/.test(r.signature) &&
+    record(p) && keys(p, ['schema_version', 'provider_id', 'service_id', 'offer_id', 'offer_hash', 'binding_hash', 'package_digest', 'runtime', 'package_kind', 'build_evidence', 'service', 'limits', 'price', 'local_verification']) &&
+    p.schema_version === 'froglet.publication-revision.v1' && p.provider_id === PUBLIC_DEMO.providerId && p.service_id === profile.serviceId && p.offer_id === profile.offerId && p.offer_hash === profile.offerHash &&
+    p.binding_hash === profile.bindingHash && p.package_digest === profile.moduleHash && p.runtime === 'wasm' && p.package_kind === 'inline_module' &&
+    record(i) && keys(i, ['project_id', 'summary', 'starter', 'source_kind', 'entrypoint_kind', 'entrypoint', 'contract_version', 'mode', 'mounts', 'capabilities', 'input_schema', 'output_schema']) &&
+    i.entrypoint_kind === 'module' && i.entrypoint === profile.entrypoint && i.contract_version === 'froglet.wasm.host_json.v1' && i.mode === 'sync' && exactGrant(i.capabilities, profile) && (i.mounts === undefined || Array.isArray(i.mounts) && i.mounts.length === 0) && namedLimits(p.limits) &&
+    i.source_kind === 'wasm' && (s.project_id === undefined || publicBuildText(s.project_id)) && s.project_id === i.project_id && shortString(s.summary, 8192) && s.summary === i.summary && publicStarter(s.starter, profile) && s.starter === i.starter &&
+    sameJson(s.input_schema, operation.inputSchema) && sameJson(i.input_schema, operation.inputSchema) && sameJson(s.output_schema, operation.outputSchema) && sameJson(i.output_schema, operation.outputSchema) && publicBuildEvidence(p.build_evidence, profile) && publicVerificationEvidence(p.local_verification) &&
+    record(price) && exactKeys(price, ['settlement_method', 'currency', 'base_amount_minor', 'success_amount_minor', 'offer_settlement_method']) && price.currency === 'sat' && price.settlement_method === 'none' && price.offer_settlement_method === 'none' && price.base_amount_minor === 0 && price.success_amount_minor === 0;
+}
+
 function allowedWork(body: Record<string, any>): boolean {
   if (body.kind === 'wasm') {
     const s = body.submission;
@@ -204,7 +326,11 @@ function allowedWork(body: Record<string, any>): boolean {
   return false;
 }
 
-function allowedPost(path: string, body: unknown, providerId: string): boolean {
+function allowedPost(path: string, body: unknown, providerId: string, profiles: readonly PublishedServiceProfile[] = []): boolean {
+  if (record(body)) {
+    const profile = workProfile(body, profiles);
+    if (profile) return namedPost(path, body, profile);
+  }
   if (!record(body) || !finiteJson(body) || !allowedWork(body)) return false;
   const offerId = body.kind === 'wasm' ? PUBLIC_DEMO.computeOffer : PUBLIC_DEMO.catalogService;
   if (path === '/v1/provider/quotes') return keys(body, ['offer_id', 'requester_id', 'kind', 'submission', 'execution', 'max_price_sats']) && body.offer_id === offerId && hex(body.requester_id) && body.max_price_sats === 0;
@@ -237,33 +363,61 @@ export async function publicDemoResponse(request: Request, env: PublicDemoEnv): 
   if (!hex(providerId) || providerOrigin !== PUBLIC_DEMO.origin) return reply(503, 'demo_not_active', 'The demo provider configuration is invalid.');
   if (url.search || url.pathname.includes('%') || url.pathname.includes('..')) return reply(400, 'invalid_route', 'Invalid demo route.');
   const path = url.pathname.slice(PUBLIC_DEMO_PREFIX.length);
-  if (path === '/config' && request.method === 'GET') return new Response(JSON.stringify({ providerId, providerOrigin, limits: PUBLIC_DEMO }), { headers });
-  const get = request.method === 'GET' && (['/health', '/demo/status', '/v1/provider/descriptor', '/v1/provider/offers', `/v1/provider/services/${PUBLIC_DEMO.catalogService}`].includes(path) || /^\/v1\/provider\/deals\/[a-zA-Z0-9_-]{1,128}$/.test(path));
+  const profiles = configuredProfiles(env, providerId);
+  if (path === '/config' && request.method === 'GET') return new Response(JSON.stringify({ providerId, providerOrigin, limits: PUBLIC_DEMO, publishedServices: { enabled: profiles.length === 3, profiles } }), { headers });
+  const metadataProfile = profiles.find(p => path === '/v1/provider/services/' + p.serviceId);
+  const get = request.method === 'GET' && (['/health', '/demo/status', '/v1/provider/descriptor', '/v1/provider/offers', `/v1/provider/services/${PUBLIC_DEMO.catalogService}`].includes(path) || Boolean(metadataProfile) || /^\/v1\/provider\/deals\/[a-zA-Z0-9_-]{1,128}$/.test(path));
   const post = request.method === 'POST' && ['/v1/provider/quotes', '/v1/provider/deals'].includes(path);
   if (!get && !post) return reply(404, 'invalid_route', 'This operation is not part of the public demo.');
   const origin = request.headers.get('origin');
   if (origin && origin !== url.origin) return reply(403, 'origin_refused', 'Use the demo on this site.');
-  let admitted: boolean;
-  try { admitted = (await env.PUBLIC_DEMO_RATE_LIMITER.limit({ key: 'froglet-public-demo:' + (request.headers.get('cf-connecting-ip') ?? 'unknown') })).success; }
-  catch { return reply(503, 'demo_not_active', 'The demo admission control is unavailable.'); }
-  if (!admitted) return new Response(JSON.stringify({ code: 'demo_busy', error: 'Please wait before making another request.' }), { status: 429, headers: { ...headers, 'retry-after': '10' } });
-  let text: string | undefined;
-  if (post) {
-    if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') return reply(415, 'invalid_input', 'Send JSON.');
-    try { text = await boundedText(request.body, MAX_REQUEST_BYTES); }
-    catch { return reply(413, 'invalid_input', 'The request is too large or invalid.'); }
-    let body: unknown;
-    try { body = JSON.parse(text); } catch { return reply(400, 'invalid_input', 'The request is not valid JSON.'); }
-    if (!allowedPost(path, body, providerId)) return reply(400, 'invalid_input', 'The request does not match a free bounded demo operation.');
-  }
-  const control = new AbortController();
-  const timer = setTimeout(() => control.abort(), 15000);
-  try {
-    const upstream = await fetch(new Request(providerOrigin + path, { method: request.method, headers: { accept: 'application/json', ...(post ? { 'content-type': 'application/json' } : {}) }, ...(text === undefined ? {} : { body: text }), redirect: 'manual', signal: control.signal }));
-    if (upstream.status >= 300 && upstream.status < 400) { await upstream.body?.cancel(); return reply(502, 'provider_unavailable', 'The provider returned an unexpected redirect.'); }
-    const body = await boundedText(upstream.body, MAX_RESPONSE_BYTES);
-    try { JSON.parse(body); } catch { return reply(502, 'provider_unavailable', 'The provider returned an invalid response.'); }
-    return new Response(body, { status: upstream.status, headers });
-  } catch { return reply(502, 'provider_unavailable', 'The provider did not answer. Retry the same job rather than submitting another.'); }
-  finally { clearTimeout(timer); }
+  const control = new AbortController(), started = performance.now();
+  let phase: 'admission' | 'request' | 'upstream' = 'admission';
+  const expired = () => control.signal.aborted || performance.now() - started >= 15000;
+  const timeoutReply = () => phase === 'admission' ? reply(503, 'demo_not_active', 'The demo admission control is unavailable.')
+    : phase === 'request' ? reply(408, 'request_timeout', 'The demo request input timed out.')
+      : reply(502, 'provider_unavailable', 'The provider did not answer. Retry the same job rather than submitting another.');
+  let timer: ReturnType<typeof setTimeout>;
+  const deadline = new Promise<Response>(resolve => {
+    timer = setTimeout(() => { control.abort(); cancelReadBody(request.body); resolve(timeoutReply()); }, 15000);
+  });
+  const work = async () => {
+    try {
+      let admitted: boolean;
+      try { admitted = (await env.PUBLIC_DEMO_RATE_LIMITER!.limit({ key: 'froglet-public-demo:' + (request.headers.get('cf-connecting-ip') ?? 'unknown') })).success; }
+      catch { return reply(503, 'demo_not_active', 'The demo admission control is unavailable.'); }
+      if (expired()) return timeoutReply(); // Late admission must not start a native request.
+      if (!admitted) return new Response(JSON.stringify({ code: 'demo_busy', error: 'Please wait before making another request.' }), { status: 429, headers: { ...headers, 'retry-after': '10' } });
+      let text: string | undefined;
+      let namedBody: Record<string, any> | undefined;
+      if (post) {
+        phase = 'request';
+        if (request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json') return reply(415, 'invalid_input', 'Send JSON.');
+        try { text = await boundedText(request.body, MAX_REQUEST_BYTES, control.signal); }
+        catch { return expired() ? timeoutReply() : reply(413, 'invalid_input', 'The request is too large or invalid.'); }
+        if (expired()) return timeoutReply();
+        let body: unknown;
+        try { body = JSON.parse(text); } catch { return reply(400, 'invalid_input', 'The request is not valid JSON.'); }
+        if (!allowedPost(path, body, providerId, profiles)) return reply(400, 'invalid_input', 'The request does not match a free bounded demo operation.');
+        if (record(body) && workProfile(body, profiles)) namedBody = body;
+      }
+      if (expired()) return timeoutReply();
+      phase = 'upstream';
+      const upstream = await fetch(new Request(providerOrigin + path, { method: request.method, headers: { accept: 'application/json', ...(post ? { 'content-type': 'application/json' } : {}) }, ...(text === undefined ? {} : { body: text }), redirect: 'manual', signal: control.signal }));
+      if (expired()) { cancelReadBody(upstream.body); return timeoutReply(); }
+      if (upstream.status >= 300 && upstream.status < 400) { cancelReadBody(upstream.body); return reply(502, 'provider_unavailable', 'The provider returned an unexpected redirect.'); }
+      const body = await boundedText(upstream.body, MAX_RESPONSE_BYTES, control.signal);
+      if (expired()) return timeoutReply();
+      let result: unknown;
+      try { result = JSON.parse(body); } catch { return reply(502, 'provider_unavailable', 'The provider returned an invalid response.'); }
+      if (upstream.status === 200 && metadataProfile && !namedMetadata(result, metadataProfile)) return reply(502, 'provider_unavailable', 'The provider description does not match the configured public tool.');
+      if (upstream.status === 201 && namedBody && path === '/v1/provider/quotes') {
+        const profile = workProfile(namedBody, profiles)!;
+        if (!finiteJson(result) || !namedQuoteClaims(result, profile) || result.payload.requester_id !== namedBody.requester_id || result.payload.expires_at < Math.floor(Date.now() / 1000)) return reply(502, 'provider_unavailable', 'The provider quote does not match the configured public tool.');
+      }
+      return expired() ? timeoutReply() : new Response(body, { status: upstream.status, headers });
+    } catch { return timeoutReply(); }
+  };
+  try { return await Promise.race([work(), deadline]); }
+  finally { clearTimeout(timer!); }
 }

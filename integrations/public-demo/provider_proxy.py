@@ -1,9 +1,12 @@
 """Narrow public ingress for an unchanged native Froglet node on loopback.
 
-Only free pure-Wasm jobs and the selected synthetic catalog are exposed.
-Operator/runtime endpoints, credentials, Python/container execution and host
-capabilities never pass this boundary. Native Froglet verifies signed records
-and atomically enforces execution allowances; this service caps HTTP traffic.
+Discovery exposes only free pure-Wasm, the selected synthetic catalog and
+exact profile-pinned offers, retaining their signed documents unchanged. An
+optional protected profile permits three named Wasm services, each with one
+exact HTTP-operation capability. Operator/runtime endpoints, credentials,
+Python/container execution and arbitrary host access never pass this boundary.
+Native Froglet verifies signed records and execution allowances; this service
+caps HTTP traffic.
 """
 import hashlib
 from contextlib import contextmanager
@@ -15,6 +18,7 @@ from pathlib import Path
 import re
 import socket
 import sqlite3
+import stat
 import threading
 import time
 import urllib.error
@@ -22,6 +26,8 @@ import urllib.request
 
 NODE = 'http://127.0.0.1:8080'
 CATALOG = 'synthetic-terminology-demo'
+APPROVED_SERVICE_IDS = frozenset({'marketplace-search', 'marketplace-provider', 'marketplace-receipts'})
+APPROVED_PROFILE_SCHEMA = 'froglet.public-demo-approved-services.v1'
 MAX_REQUEST = 786432
 MAX_RESPONSE = 1048576
 MAX_METADATA_RESPONSE = 32768
@@ -70,7 +76,82 @@ def hash_string(value):
     return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
 
 
-def allowed_work(body):
+def load_approved_services(path, expected_sha256, provider_id, *, root):
+    """Load one operator-pinned file directly inside the protected volume."""
+    path, root = Path(path), Path(root)
+    if (not path.is_absolute() or path.parent != root
+            or not hash_string(expected_sha256) or not hash_string(provider_id)):
+        raise RuntimeError('approved-profile-location-or-digest-invalid')
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        directory = os.open(root, flags | os.O_DIRECTORY)
+        try:
+            directory_stat = os.fstat(directory)
+            if (directory_stat.st_uid not in {0, os.geteuid()}
+                    or directory_stat.st_mode & 0o022):
+                raise RuntimeError('approved-profile-volume-not-protected')
+            descriptor = os.open(path.name, flags, dir_fd=directory)
+        finally:
+            os.close(directory)
+        with os.fdopen(descriptor, 'rb') as file:
+            info = os.fstat(file.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.geteuid()}
+                    or info.st_mode & 0o022 or not 0 < info.st_size <= MAX_METADATA_RESPONSE):
+                raise RuntimeError('approved-profile-file-not-protected')
+            raw = file.read(MAX_METADATA_RESPONSE + 1)
+    except OSError as error:
+        raise RuntimeError('approved-profile-file-unavailable') from error
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise RuntimeError('approved-profile-digest-mismatch')
+
+    def distinct_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('duplicate profile field')
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(raw, object_pairs_hook=distinct_fields)
+    except (ValueError, RecursionError) as error:
+        raise RuntimeError('approved-profile-json-invalid') from error
+    if (not isinstance(value, dict) or set(value) != {'schema_version', 'provider_id', 'services'}
+            or value['schema_version'] != APPROVED_PROFILE_SCHEMA
+            or value['provider_id'] != provider_id or not isinstance(value['services'], list)):
+        raise RuntimeError('approved-profile-schema-invalid')
+    fields = {'service_id', 'offer_id', 'offer_hash', 'descriptor_hash', 'revision_hash',
+              'module_hash', 'binding_hash', 'operation_hash', 'entrypoint'}
+    services = {}
+    for service in value['services']:
+        if (not isinstance(service, dict) or set(service) != fields
+                or not isinstance(service.get('service_id'), str)
+                or service.get('service_id') not in APPROVED_SERVICE_IDS
+                or service['offer_id'] != service['service_id']
+                or service['service_id'] in services
+                or not all(hash_string(service[k]) for k in fields - {'service_id', 'offer_id', 'entrypoint'})
+                or not isinstance(service['entrypoint'], str)
+                or not 1 <= len(service['entrypoint']) <= 128
+                or any(ord(c) < 32 or ord(c) == 127 for c in service['entrypoint'])):
+            raise RuntimeError('approved-profile-service-invalid')
+        services[service['service_id']] = service
+    if services and (set(services) != APPROVED_SERVICE_IDS
+                     or len({s['offer_hash'] for s in services.values()}) != 3
+                     or len({s['revision_hash'] for s in services.values()}) != 3):
+        raise RuntimeError('approved-profile-exact-three-services-required')
+    return services
+
+
+def approved_work_profile(body, approved_services):
+    if not isinstance(body, dict) or body.get('kind') != 'execution':
+        return None
+    execution = body.get('execution')
+    security = execution.get('security') if isinstance(execution, dict) else None
+    service_id = security.get('service_id') if isinstance(security, dict) else None
+    return approved_services.get(service_id) if isinstance(service_id, str) else None
+
+
+def allowed_work(body, approved_services=None):
     if not isinstance(body, dict) or not safe_json(body):
         return False
     if body.get('kind') == 'wasm':
@@ -90,6 +171,23 @@ def allowed_work(body):
                 and len(encoded(s.get('input'))) <= MAX_INPUT)
     if body.get('kind') == 'execution':
         e = body.get('execution')
+        profile = approved_work_profile(body, approved_services or {})
+        if profile is not None:
+            return (isinstance(e, dict) and set(e) == {
+                        'schema_version', 'workload_kind', 'runtime', 'package_kind', 'entrypoint',
+                        'contract_version', 'input_format', 'input_hash', 'security', 'input',
+                        'module_hash', 'requested_access'}
+                    and e.get('schema_version') == 'froglet/v1'
+                    and e.get('workload_kind') == 'compute.execution.v1'
+                    and e.get('runtime') == 'wasm' and e.get('package_kind') == 'inline_module'
+                    and e.get('entrypoint') == {'kind': 'module', 'value': profile['entrypoint']}
+                    and e.get('contract_version') == 'froglet.wasm.host_json.v1'
+                    and e.get('input_format') == 'application/json+jcs'
+                    and hash_string(e.get('input_hash'))
+                    and e.get('module_hash') == profile['binding_hash']
+                    and e.get('security') == {'mode': 'standard', 'service_id': profile['service_id']}
+                    and e.get('requested_access') == ['net.http.operation.' + profile['operation_hash']]
+                    and len(encoded(e.get('input'))) <= MAX_INPUT)
         if not only(e, {'schema_version', 'workload_kind', 'runtime', 'package_kind', 'entrypoint', 'contract_version', 'input_format', 'input_hash', 'security', 'input', 'module_hash', 'builtin_name'}):
             return False
         return (e.get('schema_version') == 'froglet/v1' and e.get('workload_kind') == CATALOG and e.get('builtin_name') == CATALOG
@@ -103,11 +201,13 @@ def allowed_work(body):
     return False
 
 
-def allowed_post(path, body, provider_id):
-    if not allowed_work(body):
+def allowed_post(path, body, provider_id, approved_services=None):
+    approved_services = approved_services or {}
+    if not allowed_work(body, approved_services):
         return False
+    profile = approved_work_profile(body, approved_services)
     if path == '/v1/provider/quotes':
-        offer = 'execute.compute' if body['kind'] == 'wasm' else CATALOG
+        offer = profile['offer_id'] if profile is not None else ('execute.compute' if body['kind'] == 'wasm' else CATALOG)
         return (only(body, {'offer_id', 'requester_id', 'kind', 'submission', 'execution', 'max_price_sats'})
                 and body.get('offer_id') == offer and hash_string(body.get('requester_id'))
                 and type(body.get('max_price_sats')) is int and body['max_price_sats'] == 0)
@@ -124,15 +224,35 @@ def allowed_post(path, body, provider_id):
     limits = p.get('execution_limits')
     terms = p.get('settlement_terms')
     bounds = dict(LIMITS)
-    if body['kind'] == 'execution':
+    if body['kind'] == 'execution' and profile is None:
         bounds['max_input_bytes'] = bounds['max_output_bytes'] = 1048576
     return (p.get('provider_id') == dp.get('provider_id') == provider_id
-            and p.get('workload_kind') == ('compute.wasm.v1' if body['kind'] == 'wasm' else CATALOG)
+            and p.get('workload_kind') == ('compute.execution.v1' if profile is not None else ('compute.wasm.v1' if body['kind'] == 'wasm' else CATALOG))
+            and (profile is None or (q.get('signer') == provider_id and p.get('offer_hash') == profile['offer_hash']))
             and isinstance(terms, dict) and terms.get('method') == 'none'
             and type(terms.get('base_fee_msat')) is int and terms['base_fee_msat'] == 0
             and type(terms.get('success_fee_msat')) is int and terms['success_fee_msat'] == 0
-            and p.get('capabilities_granted', []) == [] and isinstance(limits, dict)
+            and p.get('capabilities_granted', []) == ([] if profile is None else ['net.http.operation.' + profile['operation_hash']]) and isinstance(limits, dict)
             and all(exact_int(limits.get(k), 1 if k in {'max_runtime_ms', 'max_input_bytes', 'max_output_bytes'} else 0, n) for k, n in bounds.items()))
+
+
+def approved_quote_valid(quote, provider_id, profile):
+    if not isinstance(quote, dict) or not safe_json(quote):
+        return False
+    payload = quote.get('payload')
+    if not isinstance(payload, dict):
+        return False
+    terms, limits = payload.get('settlement_terms'), payload.get('execution_limits')
+    return (quote.get('artifact_type') == 'quote' and quote.get('signer') == provider_id
+            and payload.get('provider_id') == provider_id
+            and payload.get('offer_hash') == profile['offer_hash']
+            and payload.get('workload_kind') == 'compute.execution.v1'
+            and payload.get('capabilities_granted') == ['net.http.operation.' + profile['operation_hash']]
+            and isinstance(terms, dict) and terms.get('method') == 'none'
+            and type(terms.get('base_fee_msat')) is int and terms['base_fee_msat'] == 0
+            and type(terms.get('success_fee_msat')) is int and terms['success_fee_msat'] == 0
+            and isinstance(limits, dict)
+            and all(exact_int(limits.get(k), 1 if k in {'max_runtime_ms', 'max_input_bytes', 'max_output_bytes'} else 0, n) for k, n in LIMITS.items()))
 
 
 class TrafficLedger:
@@ -188,40 +308,90 @@ def native(method, path, body=None, token=None):
         return response.status, raw
 
 
+def selected_offer_documents(metadata, provider_id, approved_services, *, include_compute=False):
+    """Filter the unsigned envelope without modifying any signed Offer."""
+    if not isinstance(metadata, dict) or not isinstance(metadata.get('offers'), list):
+        raise RuntimeError('public-offers-invalid')
+    selected = {CATALOG: None, **approved_services}
+    if include_compute:
+        selected['execute.compute'] = None
+    offers = {}
+    for offer in metadata['offers']:
+        payload = offer.get('payload') if isinstance(offer, dict) else None
+        if (not isinstance(payload, dict) or offer.get('artifact_type') != 'offer'
+                or payload.get('provider_id') != provider_id
+                or not isinstance(payload.get('offer_id'), str)
+                or payload.get('offer_id') not in selected):
+            continue
+        offer_id = payload['offer_id']
+        if offer_id in offers:
+            raise RuntimeError('ambiguous-public-offer')
+        profile = selected[offer_id]
+        if profile is not None and (offer.get('hash') != profile['offer_hash']
+                                    or payload.get('descriptor_hash') != profile['descriptor_hash']):
+            raise RuntimeError('approved-public-offer-mismatch')
+        execution, price = payload.get('execution_profile'), payload.get('price_schedule')
+        bounds = dict(LIMITS)
+        if offer_id == CATALOG:
+            kind, runtime, package, contract, capabilities = CATALOG, 'builtin', 'builtin', 'froglet.builtin.data_query.json.v1', []
+            bounds.update(max_input_bytes=1048576, max_output_bytes=1048576, max_memory_bytes=0, fuel_limit=0)
+        elif profile is not None:
+            kind, runtime, package, contract = 'compute.execution.v1', 'wasm', 'inline_module', 'froglet.wasm.host_json.v1'
+            capabilities = ['net.http.operation.' + profile['operation_hash']]
+        else:
+            kind, runtime, package, contract, capabilities = 'compute.wasm.v1', 'wasm', 'inline_module', 'froglet.wasm.run_json.v1', []
+        if (not safe_json(offer) or not hash_string(offer.get('hash'))
+                or not hash_string(payload.get('descriptor_hash')) or offer.get('signer') != provider_id
+                or payload.get('offer_kind') != kind or payload.get('settlement_method') != 'none'
+                or not isinstance(price, dict)
+                or not all(type(price.get(k)) is int and price[k] == 0 for k in ('base_fee_msat', 'success_fee_msat'))
+                or not isinstance(execution, dict) or execution.get('runtime') != runtime
+                or execution.get('package_kind') != package
+                or execution.get('contract_version') != contract or execution.get('abi_version') != contract
+                or execution.get('capabilities', []) != capabilities
+                or execution.get('access_handles', []) != capabilities
+                or not all(exact_int(execution.get(k), 1 if k in {'max_runtime_ms', 'max_input_bytes', 'max_output_bytes'} else 0, n) for k, n in bounds.items())):
+            raise RuntimeError('selected-public-offer-profile-mismatch')
+        offers[offer_id] = offer
+    if not set(approved_services).issubset(offers):
+        raise RuntimeError('approved-public-offer-unavailable')
+    return list(offers.values())
+
+
 def publication_records():
-    """Selected public catalog only; never fetch the node's visitor ledger feed."""
+    """Selected catalog and pinned offers; never fetch the visitor ledger feed."""
     status, raw = native('GET', '/v1/provider/offers')
     if status != 200:
         raise RuntimeError('public-offers-unavailable')
-    offers = [o for o in json.loads(raw)['offers']
-              if o.get('artifact_type') == 'offer'
-              and o.get('payload', {}).get('offer_id') == CATALOG
-              and o.get('payload', {}).get('provider_id') == Handler.provider_id]
-    if len(offers) > 1:
-        raise RuntimeError('ambiguous-public-offer')
-    if not offers:
-        return [], []
-    offer = offers[0]
-    hashes = [offer['payload']['descriptor_hash'], offer['hash']]
+    offers = selected_offer_documents(json.loads(raw), Handler.provider_id, Handler.approved_services)
     records = []
-    for kind, artifact_hash in zip(('descriptor', 'offer'), hashes):
-        if not hash_string(artifact_hash):
-            raise RuntimeError('invalid-public-artifact-hash')
-        status, raw = native('GET', '/v1/artifacts/' + artifact_hash)
-        if status != 200:
-            raise RuntimeError('public-artifact-unavailable')
-        record = json.loads(raw)
-        document = record['document']
-        if (record['hash'] != artifact_hash or record['kind'] != kind
-                or record['actor_id'] != Handler.provider_id
-                or not exact_int(record['cursor'], 1, 9223372036854775807)
-                or document['hash'] != artifact_hash
-                or document['artifact_type'] != kind
-                or document['payload']['provider_id'] != Handler.provider_id
-                or (kind == 'offer' and document != offer)):
-            raise RuntimeError('public-artifact-binding-mismatch')
-        records.append(record)
-    return sorted(records, key=lambda r: r['cursor']), [offer['hash']]
+    seen = set()
+    for offer in offers:
+        hashes = [offer['payload']['descriptor_hash'], offer['hash']]
+        for kind, artifact_hash in zip(('descriptor', 'offer'), hashes):
+            if not hash_string(artifact_hash):
+                raise RuntimeError('invalid-public-artifact-hash')
+            if artifact_hash in seen:
+                if kind != 'descriptor':
+                    raise RuntimeError('public-artifact-hash-collision')
+                continue
+            status, raw = native('GET', '/v1/artifacts/' + artifact_hash)
+            if status != 200:
+                raise RuntimeError('public-artifact-unavailable')
+            record = json.loads(raw)
+            document = record.get('document') if isinstance(record, dict) else None
+            payload = document.get('payload') if isinstance(document, dict) else None
+            if (not isinstance(payload, dict) or record.get('hash') != artifact_hash
+                    or record.get('kind') != kind or record.get('actor_id') != Handler.provider_id
+                    or not exact_int(record.get('cursor'), 1, 9223372036854775807)
+                    or document.get('hash') != artifact_hash
+                    or document.get('artifact_type') != kind
+                    or payload.get('provider_id') != Handler.provider_id
+                    or (kind == 'offer' and document != offer)):
+                raise RuntimeError('public-artifact-binding-mismatch')
+            records.append(record)
+            seen.add(artifact_hash)
+    return sorted(records, key=lambda r: r['cursor']), [offer['hash'] for offer in offers]
 
 
 def feed_query(path):
@@ -251,18 +421,63 @@ def canary_request_valid(path, value):
     return True
 
 
+def approved_service_metadata_valid(metadata, profile, provider_id):
+    if not isinstance(metadata, dict) or not safe_json(metadata):
+        return False
+    service, revision = metadata.get('service'), metadata.get('publication_revision')
+    if not isinstance(service, dict) or not isinstance(revision, dict):
+        return False
+    payload = revision.get('payload')
+    if not isinstance(payload, dict):
+        return False
+    interface, limits, price = payload.get('service'), payload.get('limits'), payload.get('price')
+    capability = ['net.http.operation.' + profile['operation_hash']]
+    return (service.get('service_id') == payload.get('service_id') == profile['service_id']
+            and service.get('offer_id') == payload.get('offer_id') == profile['offer_id']
+            and service.get('provider_id') == payload.get('provider_id') == revision.get('signer_pubkey') == provider_id
+            and service.get('offer_kind') == 'compute.execution.v1'
+            and service.get('publication_state') == 'active'
+            and service.get('runtime') == payload.get('runtime') == 'wasm'
+            and service.get('package_kind') == payload.get('package_kind') == 'inline_module'
+            and service.get('module_hash') == service.get('binding_hash') == payload.get('binding_hash') == payload.get('package_digest') == profile['binding_hash']
+            and revision.get('revision_hash') == profile['revision_hash']
+            and payload.get('offer_hash') == profile['offer_hash']
+            and isinstance(interface, dict)
+            and service.get('entrypoint_kind') == interface.get('entrypoint_kind') == 'module'
+            and service.get('entrypoint') == interface.get('entrypoint') == profile['entrypoint']
+            and service.get('contract_version') == interface.get('contract_version') == 'froglet.wasm.host_json.v1'
+            and service.get('capabilities', []) == interface.get('capabilities', []) == capability
+            and service.get('mounts', []) == interface.get('mounts', []) == []
+            and service.get('starter') == interface.get('starter') and isinstance(service.get('starter'), str)
+            and not {'module_bytes_hex', 'inline_source', 'python_bundle', 'source_path'}.intersection(service)
+            and service.get('settlement_method') == 'none'
+            and all(type(service.get(k)) is int and service[k] == 0 for k in ('price_sats', 'base_fee_msat', 'success_fee_msat'))
+            and isinstance(price, dict) and price.get('settlement_method') == price.get('offer_settlement_method') == 'none'
+            and all(type(price.get(k)) is int and price[k] == 0 for k in ('base_amount_minor', 'success_amount_minor'))
+            and isinstance(limits, dict)
+            and all(exact_int(limits.get(k), 1 if k in {'max_runtime_ms', 'max_input_bytes', 'max_output_bytes'} else 0, n) for k, n in LIMITS.items()))
+
+
 def allowed_canary(path, value):
     if not canary_request_valid(path, value):
         return False
-    status, raw = native('GET', '/v1/provider/services/' + CATALOG)
+    profile = next((p for p in Handler.approved_services.values()
+                    if p['offer_hash'] == value['offer_hash'] or p['revision_hash'] == value['revision_hash']), None)
+    if profile is not None and (profile['offer_hash'] != value['offer_hash'] or profile['revision_hash'] != value['revision_hash']):
+        return False
+    service_id = CATALOG if profile is None else profile['service_id']
+    status, raw = native('GET', '/v1/provider/services/' + service_id)
     if status != 200:
         return False
     metadata = json.loads(raw)
+    if profile is not None and not approved_service_metadata_valid(metadata, profile, Handler.provider_id):
+        return False
     revision = metadata['publication_revision']
-    # The immutable fixture is already public synthetic data. No arbitrary
-    # program, private service or input can enter through the canary endpoint.
+    # Only the selected service's already-public starter can enter the canary
+    # endpoint; arbitrary programs, private services and other inputs cannot.
     starter = json.loads(metadata['service']['starter'])
-    return (value['revision_hash'] == revision['revision_hash']
+    return (safe_json(starter) and len(encoded(starter)) <= MAX_INPUT
+            and value['revision_hash'] == revision['revision_hash']
             and value['offer_hash'] == revision['payload']['offer_hash']
             and json.dumps(value['input'], sort_keys=True, allow_nan=False)
             == json.dumps(starter, sort_keys=True, allow_nan=False))
@@ -302,6 +517,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
     slots = threading.BoundedSemaphore(8)
     provider_id = ''
     ledger = None
+    approved_services = {}
 
     def log_message(self, *_):
         pass  # Never log caller input, job capabilities or private headers.
@@ -328,7 +544,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         feed = feed_query(path)
         artifact = re.fullmatch('/v1/artifacts/([0-9a-f]{64})', path)
         canary = re.fullmatch('/v1/publications/([0-9a-f]{64})/canary', path)
-        metadata = feed is not None or artifact or path == '/v1/node/capabilities'
+        service_profile = next((p for p in self.approved_services.values()
+                                if path == '/v1/provider/services/' + p['service_id']), None)
+        metadata = feed is not None or artifact or path == '/v1/node/capabilities' or service_profile is not None
         known_get = metadata or path in {'/health', '/demo/status', '/v1/provider/descriptor', '/v1/provider/offers', '/v1/provider/services/' + CATALOG} or re.fullmatch('/v1/provider/deals/[a-zA-Z0-9_-]{1,128}', path)
         if (post and path not in {'/v1/provider/quotes', '/v1/provider/deals'} and not canary) or (not post and not known_get):
             self.answer(404, {'error': 'This operation is not exposed by the public demo.'})
@@ -359,25 +577,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     return
                 try:
                     value = json.loads(raw)
-                    allowed = canary_request_valid(path, value) if canary else allowed_post(path, value, self.provider_id)
+                    allowed = canary_request_valid(path, value) if canary else allowed_post(path, value, self.provider_id, self.approved_services)
                 except (ValueError, RecursionError, TypeError, OverflowError):
                     allowed = False
                 if not allowed:
-                    self.answer(400, {'error': 'Only free pure-Wasm jobs and the selected synthetic catalog are accepted.'})
+                    self.answer(400, {'error': 'Only free Wasm jobs and selected public services are accepted.'})
                     return
                 body = raw
             if path != '/health' and not self.ledger.reserve(size, response_limit):
                 self.answer(429, {'error': 'The shared beta traffic allowance is spent. Existing usage is preserved.'})
                 return
             if canary and not allowed_canary(path, value):
-                self.answer(400, {'error': 'Only the current public catalog verification fixture is accepted.'})
+                self.answer(400, {'error': 'Only a current selected service verification fixture is accepted.'})
                 return
             if feed is not None or artifact:
                 records, hashes = publication_records()
                 if artifact:
                     match = next((r for r in records if r['hash'] == artifact[1]), None)
                     if match is None:
-                        self.answer(404, {'error': 'Only current public catalog artifacts are exposed.'})
+                        self.answer(404, {'error': 'Only current selected publication artifacts are exposed.'})
                         return
                     raw = encoded(match)
                 else:
@@ -407,6 +625,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                   'observed_at': int(time.time())})
             else:
                 status, raw = native('POST' if post else 'GET', path, body)
+                if not post and path == '/v1/provider/offers' and status == 200:
+                    raw = encoded({'offers': selected_offer_documents(json.loads(raw), self.provider_id, self.approved_services, include_compute=True)})
+                if service_profile is not None and 200 <= status < 300 and not approved_service_metadata_valid(json.loads(raw), service_profile, self.provider_id):
+                    raise RuntimeError('approved-native-service-mismatch')
+                if post and path == '/v1/provider/quotes' and 200 <= status < 300:
+                    profile = approved_work_profile(value, self.approved_services)
+                    if profile is not None and not approved_quote_valid(json.loads(raw), self.provider_id, profile):
+                        raise RuntimeError('approved-native-quote-mismatch')
                 if len(raw) > response_limit:
                     raise RuntimeError('public-metadata-too-large')
                 self.answer(status, raw)
@@ -429,6 +655,14 @@ def main():
     provider = json.loads(raw)['payload']['provider_id']
     if not hash_string(provider) or expected.is_symlink():
         raise RuntimeError('provider-identity-invalid')
+    profile_path = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_PATH')
+    profile_sha256 = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_SHA256')
+    if profile_path is None and profile_sha256 is None:
+        Handler.approved_services = {}
+    elif not profile_path or not profile_sha256:
+        raise RuntimeError('approved-profile-configuration-incomplete')
+    else:
+        Handler.approved_services = load_approved_services(profile_path, profile_sha256, provider, root=root)
     first_boot = not expected.exists()
     if not first_boot and expected.read_text().strip() != provider:
         raise RuntimeError('provider-identity-changed')

@@ -4,6 +4,7 @@
 import type { MarketplaceOfferSummary } from '../data/live-snapshot';
 import { PUBLIC_DEMO } from '../data/public-demo-config';
 import { serviceName } from '../data/service-presentation';
+import { PUBLIC_HTTP_SERVICE_IDS, type PublishedServiceProfile } from './live-service-client';
 
 export type AvailabilityState = 'ready' | 'warn' | 'unknown';
 export interface Availability { label: string; ready: boolean; state: AvailabilityState }
@@ -37,20 +38,41 @@ export function hasShareLink(offer: MarketplaceOfferSummary): boolean {
 	return Boolean(offer.sharePath && SHARE_PATH.test(offer.sharePath));
 }
 
-/** This site's two anonymous demo operations. Registry-supplied URLs never become actions. */
-export function publicDemoLink(offer: MarketplaceOfferSummary): string | undefined {
-	if (offer.providerId !== PUBLIC_DEMO.providerId || !isFree(offer) || offer.availability?.admission === 'invitation_required') return undefined;
+function suppliedDemoOffer(offer: MarketplaceOfferSummary): boolean {
 	const compute = offer.offerId === PUBLIC_DEMO.computeOffer && offer.offerKind === 'compute.wasm.v1' && offer.runtime === 'wasm' && offer.packageKind === 'inline_module';
 	const catalog = offer.offerId === PUBLIC_DEMO.catalogService && offer.offerKind === PUBLIC_DEMO.catalogService && offer.runtime === 'builtin' && offer.packageKind === 'builtin';
-	return compute || catalog ? '/services/#try-it' : undefined;
+	return compute || catalog;
 }
 
-/** Shared services are the ones with a share link; everything else is grouped by what the offer does. */
+function publishedProfile(offer: MarketplaceOfferSummary, profiles: readonly PublishedServiceProfile[]): PublishedServiceProfile | undefined {
+	if (offer.offerKind !== 'compute.execution.v1' || offer.runtime !== 'wasm' || offer.packageKind !== 'inline_module') return undefined;
+	return profiles.find(profile => PUBLIC_HTTP_SERVICE_IDS.some(id => id === profile.serviceId)
+		&& profile.offerId === offer.offerId && (!offer.serviceId || offer.serviceId === profile.serviceId)
+		&& /^[a-f0-9]{64}$/.test(profile.offerHash) && profile.offerHash === offer.artifactHash);
+}
+
+/** Supported public beta entries stay visible when their truthful check expires; other indexed entries are archived. */
+export function isPublicBetaOffer(offer: MarketplaceOfferSummary): boolean {
+	const publishedRead = PUBLIC_HTTP_SERVICE_IDS.some(id => id === offer.offerId) && offer.offerKind === 'compute.execution.v1' && offer.runtime === 'wasm' && offer.packageKind === 'inline_module';
+	return offer.providerId === PUBLIC_DEMO.providerId && isFree(offer) && (suppliedDemoOffer(offer) || publishedRead);
+}
+
+/** Registry URLs never become actions. Newly published services also require the exact configured artifact and a current execution check. */
+export function publicDemoLink(offer: MarketplaceOfferSummary, profiles: readonly PublishedServiceProfile[] = [], stale = false, now = Date.now()): string | undefined {
+	if (!isPublicBetaOffer(offer) || offer.availability?.admission === 'invitation_required') return undefined;
+	if (suppliedDemoOffer(offer)) return '/services/#try-it';
+	const profile = publishedProfile(offer, profiles);
+	return profile && offer.availability?.admission === 'execution_checked' && serviceAvailability(offer, stale, now).ready
+		? `/services/?service=${profile.serviceId}#try-it` : undefined;
+}
+
+/** Safe share links and the public catalog are services; other offers are grouped by their function. */
 export function categoryOf(offer: MarketplaceOfferSummary): Category {
 	if (hasShareLink(offer)) return 'service';
+	if (offer.providerId === PUBLIC_DEMO.providerId && offer.offerId === PUBLIC_DEMO.catalogService) return 'service';
 	const id = (offer.offerId || '').toLowerCase();
 	const kind = (offer.offerKind || '').toLowerCase();
-	if (id.startsWith('marketplace.') || kind.startsWith('marketplace.')) return 'marketplace';
+	if (id.startsWith('marketplace.') || kind.startsWith('marketplace.') || PUBLIC_HTTP_SERVICE_IDS.some(service => service === id)) return 'marketplace';
 	if (id.startsWith('events.') || kind.startsWith('events.')) return 'events';
 	if (id.startsWith('execute.') || kind.startsWith('compute.')) return 'compute';
 	return 'other';
@@ -84,6 +106,10 @@ const builtInTitles: Record<string, string> = {
 };
 
 const offerDescriptions: Record<string, string> = {
+	'marketplace-provider': 'Look up a public provider and its advertised capabilities.',
+	'marketplace-search': 'Search public marketplace offers with bounded filters and pagination.',
+	'marketplace-receipts': 'Read execution receipts indexed for a public provider.',
+	'synthetic-terminology-demo': 'Query a small synthetic terminology catalog; this demo contains no patient data.',
 	'events.query': 'Read events recorded by this Froglet node.',
 	'compute.wasm.v1': 'Run a WebAssembly workload and receive a signed execution receipt.',
 	'compute.execution.v1': 'Run a supported compute workload and receive a signed execution receipt.',
@@ -102,7 +128,7 @@ export function offerTitle(offer: MarketplaceOfferSummary): string {
 }
 
 export function describeOffer(offer: MarketplaceOfferSummary): string {
-	return offer.summary || offerDescriptions[offer.offerKind] || 'Provider-published service. Inspect its input and output contract before calling.';
+	return offer.summary || offerDescriptions[offer.offerId] || offerDescriptions[offer.offerKind] || 'Provider-published service. Inspect its input and output contract before calling.';
 }
 
 /** "just now", "12s ago", "3m ago", "5h ago", "2d ago". */
