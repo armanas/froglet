@@ -20,17 +20,15 @@ children = []
 
 def verify_approved_http_policy():
     """Optional named tools require the exact public profile and HTTP policy."""
-    profile_path = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_PATH')
-    profile_sha = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_SHA256')
-    if not profile_path and not profile_sha:
-        return
-    from provider_proxy import load_approved_services
+    from provider_proxy import approved_profile_settings, load_approved_services
 
+    settings = approved_profile_settings()
+    if settings is None:
+        return
     expected = ROOT / 'expected-provider-id'
     if expected.is_symlink() or not expected.is_file():
         raise RuntimeError('approved-http-existing-identity-required')
-    services = load_approved_services(profile_path or '', profile_sha or '',
-                                      expected.read_text().strip(), root=ROOT)
+    services = load_approved_services(*settings, expected.read_text().strip(), root=ROOT)
     if not services:
         return
     policy_path = os.environ.get('FROGLET_WASM_POLICY_PATH')

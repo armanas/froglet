@@ -134,6 +134,9 @@ class PublicDemoApprovedProfileTests(unittest.TestCase):
                 del demo.os.environ['FROGLET_PUBLIC_DEMO_PROFILE_PATH']
                 demo.main()
                 self.assertEqual(demo.Handler.approved_services, {})
+                demo.os.environ.update({'FROGLET_PUBLIC_DEMO_PROFILE_PATH': '', 'FROGLET_PUBLIC_DEMO_PROFILE_SHA256': ''})
+                demo.main()
+                self.assertEqual(demo.Handler.approved_services, {})
 
 
 def quote_request():

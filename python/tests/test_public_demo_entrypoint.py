@@ -91,6 +91,27 @@ max_redirects = 0
         self.policy.unlink()
         self.check({})
 
+    def test_supervisor_and_ingress_agree_on_disabled_and_incomplete_profile_settings(self):
+        # A disagreement would start the native node and then crash-loop the ingress.
+        unset, empty = {}, {'FROGLET_PUBLIC_DEMO_PROFILE_PATH': '', 'FROGLET_PUBLIC_DEMO_PROFILE_SHA256': ''}
+        path_only = {'FROGLET_PUBLIC_DEMO_PROFILE_PATH': str(self.profile), 'FROGLET_PUBLIC_DEMO_PROFILE_SHA256': ''}
+        digest_only = {'FROGLET_PUBLIC_DEMO_PROFILE_PATH': '', 'FROGLET_PUBLIC_DEMO_PROFILE_SHA256': '0' * 64}
+        for environment in (unset, empty):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True):
+                self.assertIsNone(proxy.approved_profile_settings())
+                self.assertIsNone(entrypoint.verify_approved_http_policy())
+        for environment in (path_only, digest_only):
+            with self.subTest(environment=environment), patch.dict(os.environ, environment, clear=True):
+                with self.assertRaisesRegex(RuntimeError, 'approved-profile-configuration-incomplete'):
+                    proxy.approved_profile_settings()
+                with self.assertRaisesRegex(RuntimeError, 'approved-profile-configuration-incomplete'):
+                    entrypoint.verify_approved_http_policy()
+
+    def test_named_tools_require_an_existing_provider_identity(self):
+        (self.root / 'expected-provider-id').unlink()
+        with self.assertRaisesRegex(RuntimeError, 'approved-http-existing-identity-required'):
+            self.check()
+
     def test_exact_protected_three_operation_policy_is_accepted_without_writes(self):
         before = {path.name: path.read_bytes() for path in self.root.iterdir()}
         self.check()

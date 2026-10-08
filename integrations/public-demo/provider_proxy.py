@@ -76,6 +76,17 @@ def hash_string(value):
     return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
 
 
+def approved_profile_settings():
+    """Shared by the supervisor and ingress: both unset or empty disables named tools; one alone is refused."""
+    path = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_PATH') or ''
+    sha256 = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_SHA256') or ''
+    if not path and not sha256:
+        return None
+    if not path or not sha256:
+        raise RuntimeError('approved-profile-configuration-incomplete')
+    return path, sha256
+
+
 def load_approved_services(path, expected_sha256, provider_id, *, root):
     """Load one operator-pinned file directly inside the protected volume."""
     path, root = Path(path), Path(root)
@@ -655,14 +666,8 @@ def main():
     provider = json.loads(raw)['payload']['provider_id']
     if not hash_string(provider) or expected.is_symlink():
         raise RuntimeError('provider-identity-invalid')
-    profile_path = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_PATH')
-    profile_sha256 = os.environ.get('FROGLET_PUBLIC_DEMO_PROFILE_SHA256')
-    if profile_path is None and profile_sha256 is None:
-        Handler.approved_services = {}
-    elif not profile_path or not profile_sha256:
-        raise RuntimeError('approved-profile-configuration-incomplete')
-    else:
-        Handler.approved_services = load_approved_services(profile_path, profile_sha256, provider, root=root)
+    settings = approved_profile_settings()
+    Handler.approved_services = {} if settings is None else load_approved_services(*settings, provider, root=root)
     first_boot = not expected.exists()
     if not first_boot and expected.read_text().strip() != provider:
         raise RuntimeError('provider-identity-changed')
