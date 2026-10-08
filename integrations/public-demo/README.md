@@ -11,8 +11,10 @@ The website Worker forwards only allowlisted free native-provider operations to
 `froglet-public-beta-20261006.fly.dev`. `provider_proxy.py` repeats the narrow
 operation/runtime/resource checks before forwarding to the node on loopback.
 Neither layer forwards caller cookies or authorization headers. Operator, legacy
-runtime, arbitrary URL, paid, Python/container and host-capability operations are
-not public demo operations. Native Froglet remains responsible for artifact
+runtime, arbitrary URL, paid and Python/container operations are not public demo
+operations. Host capabilities are refused except for the
+[optional named tools](#optional-named-tools-disabled-by-default), which stay
+disabled unless configured. Native Froglet remains responsible for artifact
 verification, job execution and atomic execution allowances.
 
 `entrypoint.py` checks the executable digest, starts the native node, publishes
@@ -21,6 +23,32 @@ The node and ingress run as UID/GID 10001 after volume initialization. The nativ
 provider control token and identity remain on the Fly volume. There is no shared
 browser signing credential: each new request is signed with a browser-generated
 identity. Only its public signed request is saved for recovery.
+
+## Optional named tools (disabled by default)
+
+Three fixed publications, `marketplace-provider`, `marketplace-search` and
+`marketplace-receipts`, can run as free public tools. Each may make exactly one
+approved HTTP operation to the website's bounded marketplace read adapters on
+`froglet.dev`. They are enabled only when every layer is configured:
+
+- Fly: `FROGLET_PUBLIC_DEMO_PROFILE_PATH` and `FROGLET_PUBLIC_DEMO_PROFILE_SHA256`
+  name a protected profile file inside `/state` and its digest. Leaving both
+  unset or empty disables the tools; setting only one refuses startup.
+- Fly: `FROGLET_WASM_POLICY_PATH` must be `/state/approved-http-policy.toml`,
+  pinned by `FROGLET_PUBLIC_DEMO_HTTP_POLICY_SHA256`. `entrypoint.py` refuses a
+  policy that differs from the reviewed scope: one call per execution, host
+  `froglet.dev` only, no private networks or redirects, 2 s, 2 KiB request and
+  128 KiB response.
+- Fly: an existing provider identity is required, so the tools cannot be
+  enabled on a first boot.
+- Worker: `FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_ENABLED=true` and
+  `FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_JSON` with all three profiles; an
+  incomplete set enables none.
+
+These pins are kept in three places (Worker profile JSON, Fly profile file and
+policy file) and are synchronized by hand; nothing cross-checks them at startup.
+Drift in an approved offer makes `/v1/provider/offers` and `/v1/feed` refuse
+with `503` for every caller, including the original demo.
 
 ## Pinned runtime and deployment
 
@@ -68,17 +96,22 @@ restore an older usage ledger to make capacity available again.
 
 The ingress exposes `/v1/node/capabilities`, a selected `/v1/feed`, and exact
 `/v1/artifacts/{hash}` reads for the active synthetic catalog's signed offer and
-its bound descriptor. It preserves the native ledger cursors and documents;
+its bound descriptor, plus the approved named-tool offers and descriptors when
+those tools are configured. The Worker forwards only exact 64-hex artifact
+reads. It preserves the native ledger cursors and documents;
 visitor quotes, deals and receipts never enter this discovery feed. Unknown
 hashes and malformed, repeated or out-of-range feed queries are refused.
 Discovery responses have a 32 KiB ceiling and reserve that ceiling in the same
 persistent traffic ledger; prior reservations remain spent. Other demo requests
 retain their existing response reservation.
 
-`POST /v1/publications/{revision}/canary` accepts only the current synthetic
-catalog revision, exact offer and immutable public verification input with a
-fresh challenge. The unchanged native node signs the response and charges its
-finite execution allowance. This is an execution check, not a health badge.
+`POST /v1/publications/{revision}/canary` accepts only a current selected
+revision (the synthetic catalog or a configured named tool), its exact offer and
+immutable public verification input with a challenge. The ingress checks only
+the challenge's form, not its freshness, so a reused challenge is accepted and
+spends allowance again. The unchanged native node signs the response and
+charges its finite execution allowance. This is an execution check, not a
+health badge.
 
 Submit the signed revision and its bound canary input through the marketplace's
 exact registration path. Direct HTTPS candidates require operator review.
@@ -99,7 +132,7 @@ actual production restoration and preserve current cumulative usage.
 Local boundary tests (no cloud capacity consumed):
 
 ```sh
-python3 -W error -m unittest python.tests.test_public_demo_proxy -v
+python3 -W error -m unittest python.tests.test_public_demo_proxy python.tests.test_public_demo_entrypoint -v
 npm test --prefix docs-site -- src/scripts/__tests__/public-demo-proxy.test.ts
 ```
 
