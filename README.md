@@ -183,10 +183,9 @@ OCI containers remain a supported packaging and deployment path.
 > invoice-bundle flow. x402's wire format is settled
 > (`x402.eip3009.v1`, [`conformance/x402_v1.json`](conformance/x402_v1.json))
 > but its rail is not: no publish-path exposure and no live transcript on any
-> network. The first-party hosted `try.froglet.dev` trial is free-only: it
-> uses `demo.add` as the canonical proof and exposes optional
-> `demo.fetch-witness`, `demo.hash-verify`, and `demo.notarize` follow-ups for
-> stronger evidence. Hosted paid rails must not be claimed live until Lightning
+> network. The first-party hosted `try.froglet.dev` trial was retired on
+> 8 October 2026; the free public beta at <https://froglet.dev/services/>
+> replaces it. Hosted paid rails must not be claimed live until Lightning
 > and Stripe have public payment transcripts, and users should not be asked to
 > manage LND channels or payment secrets just to try Froglet.
 
@@ -243,23 +242,18 @@ integration reference.
 
 The public launch story still has exactly two entry points:
 
-### 1. Try In Cloud
+### 1. Try the public beta
 
-- **Currently unavailable:** restoring the documentation site did not restore
-  or qualify the hosted compute trial. The links below describe its contract.
-- Start with
+- Open <https://froglet.dev/services/> in a browser: no installation, signup or
+  invitation. It runs your bounded Wasm program or a synthetic catalog query on
+  a real remote node and returns signed evidence the browser verifies.
+- Scope and limits:
   [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx)
-- Contract reference: [docs/HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md)
-- Session tokens on `try.froglet.dev` authorize only
-  `POST /v1/runtime/deals` and `GET /v1/runtime/deals/{deal_id}`
-- `try.froglet.dev` is the only public hosted-trial ingress; `ai.froglet.dev`
-  does not expose session minting or hosted demo deal routes directly
-- The hosted demo catalog has five free services: `demo.add`, `demo.echo`,
-  `demo.fetch-witness`, `demo.hash-verify`, and `demo.notarize`
-- `demo.add` is the canonical discover → deal → result → receipt proof;
-  witness/hash/notarize flows are optional higher-signal follow-ups
-- The hosted trial still does not prove paid rails, persistent identity,
-  service publication, marketplace depth, or general runtime access
+- The older hosted trial at `try.froglet.dev` (and its `ai.froglet.dev`
+  origin) was retired on 8 October 2026; see
+  [docs/HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md).
+- The public beta does not prove paid rails, persistent identity, service
+  publication, marketplace depth, or general runtime access.
 
 ### 2. Run Locally
 
@@ -677,7 +671,6 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 
 - First-party hosted paid rail claims for Lightning and Stripe, pending public
   live transcripts; hosted x402 remains desirable but non-blocking
-- The hosted `try.froglet.dev` gateway's private operational lifecycle
 - Higher-layer marketplace ranking, reputation, and policy services
 - Long-running batch orchestration, which remains out of scope for the current
   v1 runtime surface
@@ -703,7 +696,7 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | Document | Topic |
 |---|---|
 | [docs-site/src/content/docs/docs.mdx](docs-site/src/content/docs/docs.mdx) | Canonical onboarding manual for the public launch story |
-| [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx) | Hosted trial walkthrough and contract |
+| [docs-site/src/content/docs/learn/cloud-trial.mdx](docs-site/src/content/docs/learn/cloud-trial.mdx) | Public beta scope and the retired hosted-trial notice |
 | [docs-site/src/content/docs/learn/quickstart.mdx](docs-site/src/content/docs/learn/quickstart.mdx) | Local self-host quickstart |
 | [docs/README.md](docs/README.md) | Reference-doc map for specs, operations, and integrations |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture overview |
@@ -722,7 +715,7 @@ node integrations/mcp/froglet/test/compose-smoke.mjs
 | [MARKETPLACE.md](docs/MARKETPLACE.md) | Marketplace integration and the default public marketplace |
 | [RELAY.md](docs/RELAY.md) | Relay ingress v1 contract (outbound tunnel, zero-DNS public HTTPS) |
 | [ARBITER.md](docs/ARBITER.md) | MVP complaint and marketplace enforcement boundary |
-| [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Public contract for the hosted trial |
+| [HOSTED_TRIAL.md](docs/HOSTED_TRIAL.md) | Retirement record for the former hosted trial |
 | [RELEASE.md](docs/RELEASE.md) | Release process |
 | [NAME_COHERENCE.md](docs/NAME_COHERENCE.md) | Lightweight launch name and registry-risk note |
 | [PAYMENT_MATRIX.md](docs/PAYMENT_MATRIX.md) | Supported payment rails and verification coverage |

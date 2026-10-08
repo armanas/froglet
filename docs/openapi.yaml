@@ -28,7 +28,7 @@ tags:
   - name: Common
     description: Health and node-identity endpoints available on both ports.
   - name: Hosted Trial
-    description: First-party `try.froglet.dev` demo capability and session endpoints.
+    description: Operator-enabled hosted-trial demo capability and session endpoints. The first-party `try.froglet.dev` trial was retired on 8 October 2026.
   - name: Catalog
     description: >
       Provider-port endpoints for discovering offers and services hosted by
@@ -3026,7 +3026,7 @@ components:
 paths:
 
   # ---------------------------------------------------------------------------
-  # Hosted trial endpoints (try.froglet.dev worker -> public origin)
+  # Hosted trial endpoints (operator-enabled; first-party try.froglet.dev retired)
   # ---------------------------------------------------------------------------
 
   /api/preflight:
@@ -3064,7 +3064,7 @@ paths:
                   public_ingress:
                     type: string
                     format: uri
-                    example: https://try.froglet.dev
+                    example: https://trial.example.com
                   session_pool:
                     type: object
                     required: [enabled]

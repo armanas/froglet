@@ -10,27 +10,23 @@ function readRepoFile(path: string): string {
   return readFileSync(resolve(repoRoot, path), 'utf8');
 }
 
-const strongPrompt =
-  'Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly if you can access it, otherwise say only that you could not access it, then give me an honest, evidence-backed assessment that reports the observed HTTP statuses, observed service IDs, observed deal status, observed result, whether a receipt was present, and any mismatch between these docs and live behavior before explaining what Froglet just proved, what it did not prove, and the single most relevant next experiment for my files, tools, data, configuration, workflows, constraints, and goals.';
+// The retired hosted trial's prompt; it must not reappear as an instruction.
+const retiredPrompt = 'Read https://try.froglet.dev/llms.txt, follow the hosted demo flow exactly';
 
-const hostedCopyFiles = [
+const retirementFiles = [
   'docs/HOSTED_TRIAL.md',
   'docs-site/src/content/docs/learn/cloud-trial.mdx',
   'docs/llms/try.froglet.dev.txt',
 ];
 
-const demoServices = [
-  'demo.add',
-  'demo.echo',
-  'demo.fetch-witness',
-  'demo.hash-verify',
-  'demo.notarize',
-];
-
-describe('hosted trial docs copy', () => {
-  it('uses the same evidence-backed public prompt everywhere', () => {
-    for (const path of hostedCopyFiles) {
-      expect(readRepoFile(path), path).toContain(strongPrompt);
+describe('hosted trial retirement and public docs copy', () => {
+  it('marks the first-party hosted trial retired wherever agents and readers look', () => {
+    for (const path of retirementFiles) {
+      const text = readRepoFile(path);
+      expect(text, path).toMatch(/retired on 8 October\s+2026/);
+      expect(text, path).not.toContain(retiredPrompt);
+      expect(text, path).not.toContain('POST /api/sessions');
+      expect(text, path).toContain('froglet.dev/services/');
     }
   });
 
@@ -44,122 +40,25 @@ describe('hosted trial docs copy', () => {
     expect(publish).toContain("new URL('/publish/agent.md', siteOrigin)");
     expect(publish).toContain('Ask me separately before persistent installation and before publishing');
     expect(publish).toContain('Preserve my existing files and agent settings');
-    expect(index).not.toContain(strongPrompt);
+    expect(index).not.toContain(retiredPrompt);
   });
 
-  it('routes optional hosted trials to their own contract', () => {
+  it('routes agents away from the retired trial instead of to it', () => {
     const root = readRepoFile('docs-site/public/llms.txt');
-    expect(root).toContain('https://try.froglet.dev/llms.txt');
     expect(root).toContain('https://froglet.dev/publish/agent.md');
+    expect(root).not.toContain('https://try.froglet.dev/llms.txt');
+    expect(root).toMatch(/try\.froglet\.dev was retired/);
     expect(root).not.toContain('finish the hosted proof first');
     expect(root).not.toContain('POST /api/sessions');
   });
 
-  it('documents the five free hosted demo services', () => {
-    for (const path of [
-      'docs/HOSTED_TRIAL.md',
-      'docs-site/src/content/docs/learn/cloud-trial.mdx',
-      'docs/llms/try.froglet.dev.txt',
-    ]) {
-      const text = readRepoFile(path);
-      for (const service of demoServices) {
-        expect(text, `${path} should mention ${service}`).toContain(service);
-      }
-    }
-  });
-
-  it('gives LLMs complete hosted deal bodies instead of a minimal body guess', () => {
+  it('tells agents reading the retired trial what to say and where to go', () => {
     const llms = readRepoFile('docs/llms/try.froglet.dev.txt');
-    expect(llms).toContain('Do not invent a shorter');
-    expect(llms).toContain('PROVIDER_ID_FROM_CATALOG');
-    expect(llms).toContain('"provider":{"provider_id":"PROVIDER_ID_FROM_CATALOG","provider_url":"https://ai.froglet.dev"}');
-    expect(llms).toContain('"offer_id":"demo.add"');
-    expect(llms).toContain('"input":{"a":7,"b":5}');
-    expect(llms).toContain('"offer_id":"demo.fetch-witness"');
-    expect(llms).toContain('"input":{"url":"https://example.com/","max_bytes":1048576}');
-    expect(llms).toContain('18020a87586eb7e41683ff11bca3fb67398f123b4bbb8786434797cf2a9affbc');
-  });
-
-  it('documents hosted agent task selectors and expected report fields', () => {
-    const llms = readRepoFile('docs/llms/try.froglet.dev.txt');
-    const cloud = readRepoFile('docs-site/src/content/docs/learn/cloud-trial.mdx');
-    for (const text of [llms, cloud]) {
-      expect(text).toContain('hosted-proof');
-      expect(text).toContain('hosted-proof-with-witness');
-      expect(text).toContain('receipt-feed-check');
-      expect(text).toContain('local-install-proposal');
-      expect(text).toContain('chat-only-fallback');
-      expect(text).toContain('preflight_status');
-      expect(text).toContain('receipt_feed_match');
-      expect(text).toContain('docs_live_mismatches');
-      expect(text).toContain('next_experiment');
-    }
-  });
-
-  it('documents preflight, authorized scope, and demo-only hosted proof boundaries', () => {
-    for (const path of [
-      'docs/HOSTED_TRIAL.md',
-      'docs-site/src/content/docs/learn/cloud-trial.mdx',
-      'docs/llms/try.froglet.dev.txt',
-    ]) {
-      const text = readRepoFile(path);
-      expect(text, `${path} should document preflight`).toContain('GET /api/preflight');
-      expect(text, `${path} should require POST JSON capability`).toContain('POST JSON');
-      expect(text, `${path} should require Bearer auth capability`).toContain('Bearer auth');
-      expect(text, `${path} should mention authorized scope`).toContain('Authorized scope');
-      expect(text, `${path} should prohibit scanning`).toContain('Do not scan');
-      expect(text, `${path} should scope hosted proof to demo services`).toContain('Only `demo.*` services are part of the public hosted proof');
-      expect(text, `${path} should exclude non-demo services`).toMatch(/Other service IDs\s+may appear/);
-    }
-  });
-
-  it('gives agents a failure taxonomy that separates tool limits from service failures', () => {
-    for (const path of [
-      'docs/HOSTED_TRIAL.md',
-      'docs-site/src/content/docs/learn/cloud-trial.mdx',
-      'docs/llms/try.froglet.dev.txt',
-    ]) {
-      const text = readRepoFile(path);
-      expect(text, `${path} should classify preflight/tool limits`).toContain('client/tool limitation');
-      expect(text, `${path} should classify wrong session method`).toContain('GET /api/sessions');
-      expect(text, `${path} should classify missing auth`).toContain('401');
-      expect(text, `${path} should classify egress policy blocks`).toContain('host_not_allowed');
-      expect(text, `${path} should classify pool exhaustion`).toContain('session pool exhaustion');
-      expect(text, `${path} should classify deal failures`).toContain('failed');
-    }
-  });
-
-  it('keeps demo.add canonical and stronger demos optional', () => {
-    for (const path of [
-      'docs/HOSTED_TRIAL.md',
-      'docs-site/src/content/docs/learn/cloud-trial.mdx',
-      'docs/llms/try.froglet.dev.txt',
-    ]) {
-      const text = readRepoFile(path);
-      expect(text, `${path} should name demo.add as canonical`).toMatch(/demo\.add[\s\S]{0,120}Canonical proof|Canonical proof[\s\S]{0,120}demo\.add/);
-      expect(text, `${path} should make fetch-witness optional`).toMatch(/demo\.fetch-witness[\s\S]{0,120}Optional stronger follow-up|Optional stronger follow-up[\s\S]{0,120}demo\.fetch-witness/);
-      expect(text, `${path} should make hash-verify optional`).toMatch(/demo\.hash-verify[\s\S]{0,120}Optional stronger follow-up|Optional stronger follow-up[\s\S]{0,120}demo\.hash-verify/);
-      expect(text, `${path} should make notarize optional`).toMatch(/demo\.notarize[\s\S]{0,120}Optional stronger follow-up|Optional stronger follow-up[\s\S]{0,120}demo\.notarize/);
-    }
-  });
-
-  it('defines /v1/feed as an artifact envelope, not events or items', () => {
-    for (const path of [
-      'docs/HOSTED_TRIAL.md',
-      'docs-site/src/content/docs/learn/cloud-trial.mdx',
-      'docs/llms/try.froglet.dev.txt',
-    ]) {
-      const text = readRepoFile(path);
-      expect(text, `${path} should define feed as artifact envelope`).toContain('artifact envelope');
-      expect(text, `${path} should mention descriptors`).toContain('descriptors');
-      expect(text, `${path} should mention offers`).toContain('offers');
-      expect(text, `${path} should mention receipts`).toContain('receipts');
-      expect(text, `${path} should reject event-stream interpretation`).toContain('events stream');
-      expect(text, `${path} should reject items-collection interpretation`).toContain('items');
-      expect(text, `${path} should clarify feed matching is artifact-keyed`).toContain('runtime `deal_id`');
-      expect(text, `${path} should mention deal_hash`).toContain('deal_hash');
-      expect(text, `${path} should mention quote_hash`).toContain('quote_hash');
-    }
+    expect(llms).toContain('You must not claim a successful hosted proof');
+    expect(llms).toContain('https://froglet.dev/agent-tasks.json');
+    expect(llms).toContain('receipt-artifact-verify');
+    expect(llms).toContain('marketplace-evidence');
+    for (const removed of ['PROVIDER_ID_FROM_CATALOG', '"offer_id":"demo.add"', 'Bearer']) expect(llms).not.toContain(removed);
   });
 
   it('does not confuse the public bounded beta with the legacy five-service proof', () => {
@@ -203,23 +102,24 @@ describe('hosted trial docs copy', () => {
   it('routes advanced runtimes to their guide without claiming hosted GPU is live', () => {
     const index = readRepoFile('docs-site/src/pages/index.astro');
     const developers = readRepoFile('docs-site/src/pages/open-source.astro');
+    const scope = readRepoFile('docs-site/src/content/docs/learn/cloud-trial.mdx');
     expect(developers).toContain('current batch and GPU constraints');
     expect(developers).toContain('href="/learn/cloud-trial/"');
     expect(developers).toContain('Tor is an advanced self-hosted path');
     expect(developers).toContain('Confidential execution and selective disclosure remain specifications');
-    for (const page of [index, developers]) {
+    expect(scope).toContain('GPU execution is currently refused');
+    for (const page of [index, developers, scope]) {
       expect(page).not.toContain('T4 verified');
       expect(page).not.toContain('GPU is live');
     }
   });
 
-  it('keeps the README aligned with the deployed five-service catalog', () => {
+  it('points README readers to the public beta and the retirement record', () => {
     const readme = readRepoFile('README.md');
-    for (const service of demoServices) {
-      expect(readme, `README should mention ${service}`).toContain(service);
-    }
-    expect(readme).toContain('The hosted trial still does not prove paid rails');
-    expect(readme).not.toContain('trial proves only the\n> free `demo.add`');
+    expect(readme).toContain('https://froglet.dev/services/');
+    expect(readme).toContain('docs/HOSTED_TRIAL.md');
+    expect(readme).not.toContain('Try In Cloud');
+    expect(readme).not.toContain('Session tokens on `try.froglet.dev`');
   });
 
   it('labels the website license as Apache-2.0, not MIT', () => {
@@ -250,12 +150,10 @@ describe('hosted trial docs copy', () => {
     expect(components).toContain('background: var(--copy-bg)');
   });
 
-  it('tells LLMs to stage local install instead of jumping from proof to shell commands', () => {
+  it('tells LLMs to stage local install instead of jumping to shell commands', () => {
     for (const path of [
-      'docs/HOSTED_TRIAL.md',
       'docs-site/src/content/docs/learn/cloud-trial.mdx',
       'docs-site/src/content/docs/learn/llm-self-install.mdx',
-      'docs/llms/try.froglet.dev.txt',
     ]) {
       const text = readRepoFile(path);
       expect(text, `${path} should mention plan_install`).toContain('plan_install');
@@ -264,17 +162,16 @@ describe('hosted trial docs copy', () => {
       expect(text, `${path} should include network choice`).toContain('tor');
       expect(text, `${path} should include local footprint choice`).toContain('docker');
     }
+    const retired = readRepoFile('docs/llms/try.froglet.dev.txt');
+    for (const tool of ['plan_install', 'get_install_guide', 'plan_use_case']) expect(retired).toContain(tool);
   });
 
   it('gives simple chat LLMs a truthful fallback when they cannot run tools', () => {
-    const llms = readRepoFile('docs/llms/try.froglet.dev.txt');
     const cloud = readRepoFile('docs-site/src/content/docs/learn/cloud-trial.mdx');
-    for (const text of [llms, cloud]) {
-      expect(text).toContain('cannot run the Froglet hosted proof');
-      expect(text).toContain('chat interface');
-      expect(text).toContain('curl');
-      expect(text).toContain('must not claim');
-    }
+    expect(cloud).toContain('I cannot run Froglet from this chat interface');
+    expect(cloud).toContain('https://froglet.dev/services/');
+    expect(cloud).toContain('must not claim');
+    expect(cloud).not.toContain('cannot run the Froglet hosted proof');
   });
 
   it('documents the published MCP package as local/actionable, not a demo wrapper', () => {

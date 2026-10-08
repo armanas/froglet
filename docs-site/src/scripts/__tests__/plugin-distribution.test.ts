@@ -87,7 +87,8 @@ describe('plugin and registry distribution metadata', () => {
       expect(text).toContain('OpenClaw');
       expect(text).toContain('NemoClaw');
       expect(text).toContain('Third-party MCP directories');
-      expect(text).toContain('public free `demo.*` services');
+      expect(text).toContain('no-install evaluation: the public beta in a browser');
+      expect(text).not.toContain('public free `demo.*` services');
       expect(text).toContain('installed MCP/plugins');
       expect(text).toContain('local/self-hosted provider/runtime actions');
       expect(text).toContain('plan_use_case');

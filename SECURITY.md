@@ -22,8 +22,8 @@ Please include:
 - **Coordinated disclosure**: we ask that you not publish details until a fix
   has shipped or 90 days have elapsed, whichever comes first. We will credit
   you in the changelog and release notes unless you prefer otherwise.
-- If a report affects the hosted services (`ai.froglet.dev`,
-  `marketplace.froglet.dev`, `try.froglet.dev`, `arbiter.froglet.dev`), we may
+- If a report affects the hosted services (`froglet.dev`,
+  `marketplace.froglet.dev`, `relay.froglet.dev`, `arbiter.froglet.dev`), we may
   deploy a mitigation there before the open-source fix lands; the public fix
   still follows the timeline above.
 

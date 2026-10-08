@@ -101,9 +101,10 @@ Legend: **🟢 covered** / **🟡 partial** / **⬜ not covered** / **— not ap
 | `X402` | 🟢 9 tests in [x402.rs `mod tests`](../src/settlement/x402.rs) covering token parsing, amount/network checks, facilitator verify/settle response handling, and driver receipts (verified 2026-05-15) | 🟡 local driver path covered with mock facilitator tests; no live facilitator or compose-paid smoke today | ⬜ v0.3 follow-up | ⬜ v0.3 follow-up | 🟡 invalid amount/network and facilitator rejection are tested; replay/nonce and flaky-peer behavior are not simulated | 🟢 challenge state is stateless per-request; no restart state to recover | 🟢 settlement state via MCP |
 | `Stripe` (SPT/PaymentIntents) | 🟢 Focused hardening gates 4/4 passed on 2026-07-10: strict SPT path-segment validation, explicit sandbox-helper guard, and both caller-SPT runtime branches. The older broad Stripe suite remains subject to the staleness advisory | 🟢 Stripe driver uses a **local mock HTTP server**. On 2026-07-10, the sandbox helper test proved explicit opt-in + `sk_test_` + seller scope and both full-deal tests proved missing-SPT refusal and supplied-SPT settlement without a helper call | 🟡 public VM-backed `paid-staging.froglet.dev` smoke passed on 2026-04-30 (last refresh); this point-in-time evidence is stale and predates the current SPT hardening | ⬜ No live-money publication transcript. Stripe Agentic Commerce/SPTs remain private preview, so paid publication must not be presented as generally available | 🟢 Missing/invalid SPT, live-key helper use, non-loopback helper override, and absent caller SPT fail closed before helper I/O in focused 2026-07-10 tests. Post-capture refunds remain an operator action through Stripe, not an automated Froglet flow | 🟡 VM-backed replay evidence from 2026-04-30 has not been re-verified on the current branch | 🟢 settlement state via MCP |
 
-Hosted paid cells are intentionally separate from `try.froglet.dev`. The public
-hosted compute proof is currently unavailable; the historical free-only proof
-does not establish current availability. Stripe hosted-sandbox evidence comes from
+Hosted paid cells were always separate from the `try.froglet.dev` trial, which
+was retired on 8 October 2026; its historical free-only proof does not establish
+current availability. The free public beta at `froglet.dev/services/` does not
+exercise paid rails. Stripe hosted-sandbox evidence comes from
 `paid-staging.froglet.dev` and
 `../froglet-services/ops/paid_staging_stripe_smoke.sh`.
 

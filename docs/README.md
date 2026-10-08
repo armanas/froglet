@@ -15,7 +15,7 @@ split:
 
 Public launch entry points:
 
-- [../docs-site/src/content/docs/learn/cloud-trial.mdx](../docs-site/src/content/docs/learn/cloud-trial.mdx): hosted trial walkthrough
+- [../docs-site/src/content/docs/learn/cloud-trial.mdx](../docs-site/src/content/docs/learn/cloud-trial.mdx): public beta scope and the retired hosted-trial notice
 - [../docs-site/src/content/docs/learn/quickstart.mdx](../docs-site/src/content/docs/learn/quickstart.mdx): local self-host quickstart
 - [../docs-site/src/content/docs/learn/agents.mdx](../docs-site/src/content/docs/learn/agents.mdx): agent setup
 - [../docs-site/src/content/docs/learn/plugin-distribution.mdx](../docs-site/src/content/docs/learn/plugin-distribution.mdx): plugin and registry distribution
@@ -62,7 +62,7 @@ Public launch entry points:
 - [IDENTITY_CUSTODY.md](IDENTITY_CUSTODY.md): encrypted backup, fail-closed restore, signed rotation continuity, and KMS/HSM custody adapters
 - [DOCKER.md](DOCKER.md): local compose and container deployment
 - [GCP_SINGLE_VM.md](GCP_SINGLE_VM.md): single-VM self-host deployment wrapper
-- [HOSTED_TRIAL.md](HOSTED_TRIAL.md): public contract for the hosted trial
+- [HOSTED_TRIAL.md](HOSTED_TRIAL.md): retirement record for the former hosted trial
 - [NAME_COHERENCE.md](NAME_COHERENCE.md): lightweight launch name and registry-risk note
 - [RELEASE.md](RELEASE.md): release process and published image contract
 - [FEEDBACK.md](FEEDBACK.md): MVP feedback channel and triage loop

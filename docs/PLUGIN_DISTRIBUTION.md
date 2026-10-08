@@ -245,8 +245,8 @@ local/self-hosted MCP boundary.
 
 Every distribution surface must preserve this boundary:
 
-- no-install hosted proof: `https://froglet.dev/llms.txt`, public free `demo.*` services,
-  receipt/feed evidence, and no local secrets
+- no-install evaluation: the public beta in a browser (`https://froglet.dev/services/`)
+  and offline receipt verification, with no local secrets; the older `try.froglet.dev` trial is retired
 - installed MCP/plugins: local/self-hosted provider/runtime actions, paid rails,
   persistent identity, service publication, marketplace write flows, long jobs,
   batch, GPU, and production use cases
