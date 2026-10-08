@@ -41,7 +41,8 @@ per [VERSIONING.md](VERSIONING.md).
    configured.
 5. **Marketplace ingest.** The indexer verifies BIP340 signatures on every
    artifact before projection; unverifiable artifacts never become listings.
-   Registration requires HTTPS (or Tor) feeds and is rate-limited at the edge.
+   Registration requires HTTPS (or Tor) feeds and is subject to the hosted
+   origin's global request ceiling (see Denial of service).
 6. **Operator admin surfaces.** Arbiter verdicts and feed-source approval
    require bearer tokens. These are operator policy levers — they affect
    hosted listings, never artifact validity.
@@ -102,12 +103,20 @@ scheduled.
   The default identity is the peer socket address. Forwarding headers are used
   only when `FROGLET_TRUST_FORWARD_PUBLIC_QUOTA_HEADERS=1` and the edge strips
   client-supplied copies before forwarding.
-- Marketplace: Cloudflare edge rate limits (e.g. registration: 5/min/IP) and
-  bounded registration/domain-claim concurrency.
+- Hosted marketplace and relay: no CDN or edge proxy sits in front of
+  `marketplace.froglet.dev` or `relay.froglet.dev`. The origin proxy enforces a
+  single global (not per-IP) request-rate and concurrent-connection ceiling per
+  route class, shared by every caller and every hostname, so rotating `Host`
+  headers cannot create new buckets. Excess requests are refused with `429`,
+  and the health-check route has its own bucket. Request logging is off to
+  avoid unbounded log writes. Registration and domain-claim concurrency is
+  also bounded in the service. This bounds the request rate, and therefore
+  egress, but also means a flood can deny service to legitimate callers; it is
+  a cost control, not a fairness control.
 - **Accepted gap:** fine-grained per-IP rate limiting on *all* node routes is
   backlog (tracked for tower_governor adoption); hosted deployments rely on
-  the edge for this today. Volumetric DoS against the free tier is explicitly
-  out of scope of the bounty/disclosure policy.
+  the global origin ceiling above for this today. Volumetric DoS against the
+  free tier is explicitly out of scope of the bounty/disclosure policy.
 
 ## Accepted risks (alpha)
 
