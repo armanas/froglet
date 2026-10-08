@@ -15,7 +15,7 @@ per [VERSIONING.md](VERSIONING.md).
 | Payment credentials | provider Stripe secret key, sandbox-only Stripe SPT helper key, phoenixd credentials, LND macaroons (env/config) | Direct access to the corresponding payment account or wallet, independent of identity |
 | Success-fee preimages | requester node state, per deal | Leaking a preimage settles that success fee unconditionally |
 | Signed artifacts / receipts | node DB, public feeds, archives | Integrity is cryptographic; the threat is *loss*, not forgery |
-| Hosted service availability | `ai.froglet.dev`, `marketplace.froglet.dev`, `try.froglet.dev`, `arbiter.froglet.dev` | Free-tier outage; no custody of user funds |
+| Hosted service availability | `froglet.dev` public beta, `marketplace.froglet.dev`, `relay.froglet.dev`, `arbiter.froglet.dev` | Free-tier outage; no custody of user funds |
 
 ## Trust boundaries
 

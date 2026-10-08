@@ -1,11 +1,10 @@
 {
   "schema_version": "froglet.agent-tasks.v1",
   "name": "Froglet public agent task manifest",
-  "updated": "2026-10-01",
+  "updated": "2026-10-08",
   "purpose": "Give HTTP-capable agents exact Froglet task contracts, evidence boundaries, and report fields before they run or recommend a hosted or local Froglet workflow.",
   "canonical_sources": [
     "https://froglet.dev/llms.txt",
-    "https://try.froglet.dev/llms.txt",
     "https://froglet.dev/learn/cloud-trial/",
     "https://froglet.dev/agent-tasks.json",
     "https://froglet.dev/publish/agent.md",
@@ -128,130 +127,6 @@
       ]
     },
     {
-      "task_id": "hosted-proof",
-      "title": "Hosted proof",
-      "kind": "hosted_http_evidence",
-      "when_to_use": "Use when the user asks whether Froglet works, gives no additional context, or wants a no-install proof.",
-      "required_capabilities": [
-        "fetch URLs",
-        "POST JSON",
-        "send Authorization: Bearer headers",
-        "poll HTTP routes"
-      ],
-      "entrypoint": "https://try.froglet.dev/llms.txt",
-      "allowed_hosts": [
-        "https://try.froglet.dev"
-      ],
-      "steps": [
-        "GET /api/preflight",
-        "POST /api/sessions",
-        "GET /v1/provider/services",
-        "POST /v1/runtime/deals for demo.add",
-        "GET /v1/runtime/deals/{deal_id} until terminal status",
-        "Report evidence before recommendations"
-      ],
-      "expected_report_fields": [
-        "preflight_status",
-        "session_status",
-        "slot_id",
-        "ttl_secs",
-        "services_status",
-        "demo_service_ids",
-        "selected_service_id",
-        "deal_create_status",
-        "deal_id",
-        "final_deal_status",
-        "observed_result",
-        "receipt_present",
-        "feed_checked",
-        "feed_shape",
-        "receipt_feed_match",
-        "docs_live_mismatches",
-        "proved",
-        "not_proved",
-        "next_experiment"
-      ],
-      "must_not_claim": [
-        "paid Lightning, Stripe, or x402 settlement",
-        "persistent identity",
-        "service publication",
-        "marketplace depth",
-        "batch or GPU production support"
-      ],
-      "next_step": "If the hosted proof succeeds, ask for user context before recommending local install or a workflow-specific experiment."
-    },
-    {
-      "task_id": "hosted-proof-with-witness",
-      "title": "Hosted proof with witness",
-      "kind": "hosted_http_evidence",
-      "when_to_use": "Use when the user wants stronger evidence and provides a URL, expected hash, file hash, or content hash they own or control.",
-      "required_capabilities": [
-        "all hosted-proof capabilities",
-        "ability to choose exactly one follow-up service"
-      ],
-      "entrypoint": "https://try.froglet.dev/llms.txt",
-      "allowed_hosts": [
-        "https://try.froglet.dev",
-        "user-owned witness URL only when explicitly authorized"
-      ],
-      "steps": [
-        "Run hosted-proof first",
-        "Choose demo.fetch-witness for an owned URL",
-        "Choose demo.hash-verify for an owned URL plus expected SHA-256",
-        "Choose demo.notarize for a caller-supplied content hash",
-        "Report demo.add evidence before follow-up evidence"
-      ],
-      "expected_report_fields": [
-        "all hosted-proof fields",
-        "follow_up_service_id",
-        "follow_up_input_scope",
-        "follow_up_status",
-        "follow_up_result",
-        "follow_up_receipt_present"
-      ],
-      "must_not_claim": [
-        "third-party URL authorization",
-        "durable notarization beyond the signed hosted receipt",
-        "hash correctness unless the observed hash equals the expected hash"
-      ],
-      "next_step": "Use the follow-up result to pick a local evidence workflow only after reporting what the hosted proof still did not prove."
-    },
-    {
-      "task_id": "receipt-feed-check",
-      "title": "Receipt feed check",
-      "kind": "hosted_artifact_evidence",
-      "when_to_use": "Use after a successful hosted deal when the user asks for receipt/feed proof or marketplace-style evidence.",
-      "required_capabilities": [
-        "fetch URLs",
-        "parse JSON",
-        "compare signed deal_hash or quote_hash fields"
-      ],
-      "entrypoint": "https://try.froglet.dev/v1/feed",
-      "allowed_hosts": [
-        "https://try.froglet.dev"
-      ],
-      "steps": [
-        "GET /v1/feed",
-        "Treat the response as a Froglet artifact envelope",
-        "Inspect signed artifacts such as descriptors, offers, and receipts",
-        "Match receipt artifacts by deal_hash or quote_hash, not runtime deal_id"
-      ],
-      "expected_report_fields": [
-        "feed_checked",
-        "feed_shape",
-        "receipt_feed_match",
-        "matched_artifact_kind",
-        "matched_deal_hash_or_quote_hash",
-        "unmatched_reason"
-      ],
-      "must_not_claim": [
-        "event-stream semantics",
-        "items-collection semantics",
-        "feed match by runtime deal_id"
-      ],
-      "next_step": "Use /verify-receipt/ to verify supplied artifacts locally, then report missing chain members and verification limits."
-    },
-    {
       "task_id": "receipt-artifact-verify",
       "title": "Local artifact and chain verification",
       "kind": "offline_browser_verification",
@@ -329,7 +204,7 @@
       "task_id": "local-install-proposal",
       "title": "Local install proposal",
       "kind": "local_planning",
-      "when_to_use": "Use after the hosted evidence report when the user wants persistent identity, service publication, paid rails, private data workflows, batch, GPU, or Tor.",
+      "when_to_use": "Use when the user wants persistent identity, service publication, paid rails, private data workflows, batch, GPU, or Tor.",
       "required_capabilities": [
         "ask for install profile",
         "use local MCP/OpenClaw planning tools when available",
@@ -341,13 +216,13 @@
         "local machine only after explicit user confirmation"
       ],
       "steps": [
-        "Finish the hosted evidence report first",
+        "Report any evidence already observed, without claiming more",
         "Ask for target agent, footprint, role, payment rail, network mode, marketplace, and first use case",
         "Use plan_install before get_install_guide when local MCP tools exist",
         "Verify local health before implementing the use case"
       ],
       "expected_report_fields": [
-        "hosted_evidence_complete",
+        "observed_evidence",
         "target_agent",
         "footprint",
         "role",
@@ -378,8 +253,8 @@
         "none required"
       ],
       "steps": [
-        "Do not pretend to run the proof",
-        "Tell the user a proper test requires an HTTP-capable agentic environment or the manual curl flow",
+        "Do not pretend to run Froglet",
+        "Tell the user to try the public beta in a browser or use an HTTP-capable agent with a local setup",
         "Offer to interpret pasted outputs"
       ],
       "expected_report_fields": [
@@ -390,10 +265,10 @@
       ],
       "must_not_claim": [
         "live Froglet evidence",
-        "successful hosted proof",
+        "a successful public beta run",
         "verified receipt"
       ],
-      "next_step": "Direct the user to an HTTP-capable agent or the manual curl flow."
+      "next_step": "Direct the user to the public beta in a browser or to an HTTP-capable agent with a local setup."
     }
   ]
 }

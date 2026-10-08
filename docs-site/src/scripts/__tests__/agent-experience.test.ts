@@ -36,19 +36,19 @@ describe('agent-facing website experience', () => {
       'publish-service',
       'consume-service',
       'bounded-compute',
-      'hosted-proof',
-      'hosted-proof-with-witness',
-      'receipt-feed-check',
       'receipt-artifact-verify',
       'marketplace-evidence',
       'local-install-proposal',
       'chat-only-fallback',
     ]));
 
-    const hostedProof = manifest.task_contracts.find((task) => task.task_id === 'hosted-proof');
-    expect(hostedProof?.entrypoint).toBe('https://try.froglet.dev/llms.txt');
-    expect(hostedProof?.expected_report_fields).toContain('docs_live_mismatches');
-    expect(hostedProof?.must_not_claim).toContain('paid Lightning, Stripe, or x402 settlement');
+    // The first-party hosted trial was retired on 8 October 2026; no task may send an agent there.
+    for (const retired of ['hosted-proof', 'hosted-proof-with-witness', 'receipt-feed-check']) expect(taskIds).not.toContain(retired);
+    expect(JSON.stringify(manifest)).not.toMatch(/try\.froglet\.dev|ai\.froglet\.dev/);
+    const install = manifest.task_contracts.find((task) => task.task_id === 'local-install-proposal');
+    expect(install?.expected_report_fields).not.toContain('hosted_evidence_complete');
+    const fallback = manifest.task_contracts.find((task) => task.task_id === 'chat-only-fallback');
+    expect(fallback?.must_not_claim).toContain('live Froglet evidence');
 
     const compute = manifest.task_contracts.find((task) => task.task_id === 'bounded-compute');
     expect(compute?.entrypoint).toBe('https://froglet.dev/learn/agent-interoperability/');
