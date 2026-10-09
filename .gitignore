@@ -46,6 +46,16 @@ docs-site/.wrangler/
 .env.*
 !.env.example
 !.env.sample
+.envrc
+.dev.vars
+.dev.vars.*
+.wrangler/
+
+# Local keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
 
 # Local runtime data and databases
 /data/
@@ -71,12 +81,14 @@ docs-site/.wrangler/
 .codex/
 .froglet/
 .kiro
-/.cursor/
+# Git cannot re-include a file under an excluded directory, so exclude contents.
+/.cursor/*
 !/.cursor/mcp.json
-/.claude-plugin/
+/.claude-plugin/*
 !/.claude-plugin/marketplace.json
-/.agents/
+/.agents/*
 !/.agents/plugins/
+/.agents/plugins/*
 !/.agents/plugins/marketplace.json
 
 # OS files
