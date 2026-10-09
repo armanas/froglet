@@ -21,7 +21,8 @@ its known Astro dependency effects. The previous guard correctly refused the
 newly published 4.3.0 before this review. This update retains a temporary
 **application applicability review** of the observed behavior. All other
 high/critical findings, audit/registry errors, or failed applicability checks
-block the job. The review expires at **2026-10-17 00:00 UTC**, or earlier when a
+block the job. The review expires at **2026-11-16 00:00 UTC** (extended on
+9 October from 17 October; see below), or earlier when a
 stable version newer than the reviewed 4.3.0 is published. A clean raw audit
 still requires the version, source, configuration, registry, and actual Worker
 bundle checks below.
@@ -257,3 +258,25 @@ The raw audit reported zero high/critical findings, and the source, registry
 and fresh bundle gates still ran. All source files remained unchanged across
 validation except the three explicit guard fingerprints and this documentation
 update. These checks add no advisory allowance or publication claim.
+
+### 9 October 2026 artifact-read route and expiry extension
+
+Commit `505731e` lets the public demo Worker proxy exact
+`GET /v1/artifacts/<64-hex hash>` reads and rejects a provider reply whose
+`hash` differs from the requested one. A fresh Wrangler 4.143.1 dry-run built
+with the previous `public-demo-proxy.ts` reproduced the reviewed normalized
+Worker hash `404affed…` exactly; the current source differs from it by only
+those three lines of the artifact-read route, and the complete JavaScript
+still contains no affected cache-policy code. The guard delta updates only
+these two fingerprints:
+
+| Reviewed bytes | SHA-256 |
+| --- | --- |
+| `src/data/public-demo-proxy.ts` | `615669bbded5ba359cd1743112390b0f0300bd84e9d41280765552bc1b05e7e4` |
+| Complete normalized Worker | `0c528697ee570a2802b16b25b69f287ba20faf2577e95276047a94cb467e7990` |
+
+The application review was extended, with owner approval, from
+**2026-10-17** to **2026-11-16 00:00 UTC**. No stable `http-cache-semantics`
+release newer than 4.3.0 exists on the npm registry as of this review, and
+the observed max-stale/shared-cookie behavior remains unremediated. Versions,
+consumer graph, configuration pins and advisory identity checks are unchanged.
