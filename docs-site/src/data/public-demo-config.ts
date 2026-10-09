@@ -13,6 +13,38 @@ export const PUBLIC_DEMO = {
 
 export const PUBLIC_DEMO_PREFIX = '/api/public-demo';
 
+export const PUBLIC_HTTP_SERVICE_IDS = ['marketplace-provider', 'marketplace-search', 'marketplace-receipts'] as const;
+export type PublicHttpServiceId = typeof PUBLIC_HTTP_SERVICE_IDS[number];
+export interface PublishedServiceProfile {
+  serviceId: PublicHttpServiceId;
+  offerId: string;
+  offerHash: string;
+  bindingHash: string;
+  revisionHash: string;
+  operationHash: string;
+  moduleHash: string;
+  descriptorHash: string;
+  entrypoint: string;
+}
+export const PUBLIC_HTTP_PROFILE_FIELDS = ['serviceId', 'offerId', 'offerHash', 'bindingHash', 'revisionHash', 'operationHash', 'moduleHash', 'descriptorHash', 'entrypoint'];
+const profileObject = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
+const profileHash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+// The manifest names an authoring file; the immutable inline-Wasm publisher installs the `run` export.
+export const isPublishedServiceProfile = (p: unknown): p is PublishedServiceProfile => profileObject(p) && Object.keys(p).length === PUBLIC_HTTP_PROFILE_FIELDS.length && Object.keys(p).every(key => PUBLIC_HTTP_PROFILE_FIELDS.includes(key)) && PUBLIC_HTTP_SERVICE_IDS.includes(p.serviceId) && p.offerId === p.serviceId && p.entrypoint === 'run' && p.bindingHash === p.moduleHash && PUBLIC_HTTP_PROFILE_FIELDS.filter(key => key.endsWith('Hash')).every(key => profileHash(p[key]));
+
+/** No execution authority is enabled until all three exact public profiles are present. */
+export function publishedServiceProfiles(config: unknown): PublishedServiceProfile[] {
+  if (!profileObject(config) || config.providerId !== PUBLIC_DEMO.providerId || !profileObject(config.publishedServices) || config.publishedServices.enabled !== true) return [];
+  const profiles = config.publishedServices.profiles;
+  if (!Array.isArray(profiles) || profiles.length !== PUBLIC_HTTP_SERVICE_IDS.length) return [];
+  const seen = new Set<string>();
+  for (const p of profiles) {
+    if (!isPublishedServiceProfile(p) || seen.has(p.serviceId)) return [];
+    seen.add(p.serviceId);
+  }
+  return profiles.map(p => ({ ...p }));
+}
+
 // These adapters read the existing public catalog. They never reach node
 // execution, operator routes, a caller-selected host, or database credentials.
 const integer = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };

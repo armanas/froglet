@@ -37,6 +37,15 @@ import StoryArt from '../components/StoryArt.astro';
         <div class="live-demo-failure"><h4>What if a program never stops?</h4><p>Run an infinite loop. Bob stops it within the execution budget and signs a failure receipt.</p><button type="button" class="btn secondary" data-run-failure disabled>Try the budget limit</button></div>
       </article>
     </div>
+    <article class="story-status live-demo-card" data-published-tools hidden aria-labelledby="published-title">
+      <span class="story-kicker">Query the public marketplace</span><h3 id="published-title">Choose a published tool</h3>
+      <p>Look up a provider, search indexed offers, or inspect reported receipts. Bob runs the approved program and signs its reply.</p>
+      <label for="published-service">Public catalog tool</label>
+      <select id="published-service" data-published-service><option value="marketplace-provider">Look up a provider</option><option value="marketplace-search">Search public offers</option><option value="marketplace-receipts">Read provider receipts</option></select>
+      <label for="published-input">Query JSON</label><textarea id="published-input" data-published-input rows="5" maxlength="2048" spellcheck="false"></textarea>
+      <button type="button" class="btn primary" data-run-published disabled>Run selected tool</button>
+      <p class="story-note" data-published-status role="status">These tools become available after their published contracts are confirmed.</p>
+    </article>
     <section class="live-demo-result" aria-labelledby="result-title">
       <span class="story-kicker">Returned by the provider</span><h3 id="result-title">Your result</h3>
       <p class="live-demo-status" data-job-status role="status" aria-live="polite">Connecting to the public demo…</p>

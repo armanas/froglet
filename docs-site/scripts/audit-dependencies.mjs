@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 // This is an application applicability review, not a cache-behavior patch. See DEPENDENCY_SECURITY.md.
 const ADVISORY = 'https://github.com/advisories/GHSA-ch52-4w7c-c8xp';
 const ADVISORY_TITLE = 'http-cache-semantics max-stale handling can disclose cross-user cached responses';
-const EXPIRES = Date.parse('2026-10-17T00:00:00Z');
+const EXPIRES = Date.parse('2026-11-16T00:00:00Z');
 const VERSIONS = { astro: '7.3.5', 'http-cache-semantics': '4.3.0', wrangler: '4.143.1' };
 const EFFECTS = new Set(['http-cache-semantics', 'astro', '@astrojs/mdx', '@astrojs/starlight', 'astro-expressive-code']);
 const HASHES = {
@@ -17,7 +17,7 @@ const HASHES = {
   wranglerConfig: '8fb3b99a0b079cdc2a98f0057c2c2036243d925912abc7ad9da05046dcc14250',
   remoteSource: 'f373fa76e3112446db327c79b34e2bbb1ef1dcad41affb60788adf30edc9588e',
   // Only the generated Wasm filename's content hash is normalized. No JavaScript is omitted.
-  bundle: '55c8a8546819bed2b7f2bd999f7fcaccb136379c91c2b75cb113ae735ed6ea7a',
+  bundle: '0c528697ee570a2802b16b25b69f287ba20faf2577e95276047a94cb467e7990',
 };
 const WORKER_SOURCES = {
   'node_modules/qrcode-generator/dist/qrcode.mjs': 'ea91d7118a5395289170da848b7c6758b996163bfbccf312591ab65a4911b7c0',
@@ -30,8 +30,8 @@ const WORKER_SOURCES = {
   'src/data/service-link-page.ts': '3fda670ed4ec7f384cad3b543743793bffc57c598402d7b9ac87d308124b2c2b',
   'src/data/service-link-verifier.ts': 'ecee4c186515e943629a15a281ce8843001e3f7e69bf57c9af3104940abbc3b3',
   'src/generated/verifier/froglet_verify.js': '4c938b45a3d3abdf7aeaf000a5fcca4b70bd678989a06d9f61d557ae8ab1da09',
-  'src/data/public-demo-config.ts': 'b9daa65e5561a90e7c94a7ffa72a118b50c9950594297260f69ca8efefe359a3',
-  'src/data/public-demo-proxy.ts': '0fa95be304dad55de880ddd80c91b366fe865c52babe48cb86e6909431ed215c',
+  'src/data/public-demo-config.ts': '654da53b91039d812c1587c83e1e79a7c4c57c9bf6e1cd20ad79443ce5ace082',
+  'src/data/public-demo-proxy.ts': '615669bbded5ba359cd1743112390b0f0300bd84e9d41280765552bc1b05e7e4',
   'src/worker.ts': '1cd1a0c41c9fa4f30b8133026345dd5fcec3303f6329366c12a7ee321da48f35',
 };
 // Existing non-executable evidence links to tests; any change needs review.
@@ -229,7 +229,7 @@ async function main() {
   context.bundle = await inspectWorkerBundle(siteRoot);
   validateApplicability(context);
   console.log(`Raw npm audit: high=${audit.metadata.vulnerabilities.high}, critical=${audit.metadata.vulnerabilities.critical}. Covered advisory packages: ${evaluation.exceptedPackages.join(', ') || 'none'}.`);
-  console.log(`Known max-stale/shared-cookie behavior is unchanged in reviewed http-cache-semantics ${VERSIONS['http-cache-semantics']}; this update does not change that behavior. Application review excludes that behavior from the static site/custom Worker deployment bundle and expires 2026-10-17 UTC, even with a clean raw audit.`);
+  console.log(`Known max-stale/shared-cookie behavior is unchanged in reviewed http-cache-semantics ${VERSIONS['http-cache-semantics']}; this update does not change that behavior. Application review excludes that behavior from the static site/custom Worker deployment bundle and expires 2026-11-16 UTC, even with a clean raw audit.`);
   console.log(`Actual dry-run Worker SHA-256: ${hash(context.bundle.code)}. All other high/critical advisories remain blocking.`);
 }
 

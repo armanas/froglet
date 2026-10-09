@@ -1,7 +1,12 @@
-import { PUBLIC_DEMO } from '../data/public-demo-config';
+import { PUBLIC_DEMO, PUBLIC_MARKETPLACE_READ, PUBLIC_HTTP_PROFILE_FIELDS as profileFields, isPublishedServiceProfile as validProfile, publishedServiceProfiles, type PublicHttpServiceId, type PublishedServiceProfile } from '../data/public-demo-config';
 import { dealPayloadFor, executionFor, findUnsafeInteger, hasNonFiniteNumber, isFinished } from './playground/protocol';
 import type { ChainReport, DealRecord, Kernel, ServiceRecord, SignedArtifact, Transport, Verifier } from './playground/types';
 import type { ExchangeArtifacts, Step } from './playground/consumer';
+
+export { PUBLIC_HTTP_SERVICE_IDS, publishedServiceProfiles } from '../data/public-demo-config';
+export type { PublicHttpServiceId, PublishedServiceProfile } from '../data/public-demo-config';
+const publicHash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const object = (value: unknown): value is Record<string, any> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 export interface LiveRun {
   schema: 'froglet.public-demo.run.v1';
@@ -10,6 +15,7 @@ export interface LiveRun {
   request: { quote: SignedArtifact; deal: SignedArtifact; kind: 'wasm' | 'execution'; submission?: any; execution?: any; idempotency_key: string };
   artifacts: Omit<ExchangeArtifacts, 'receipt'>;
   dealId?: string;
+  publishedService?: { profile: PublishedServiceProfile; revision: unknown };
 }
 
 export interface LiveDeps {
@@ -20,6 +26,8 @@ export interface LiveDeps {
   onStep?: (step: Step) => void;
   save?: (run: LiveRun) => void;
   sleep?: (ms: number) => Promise<void>;
+  publishedServices?: readonly PublishedServiceProfile[];
+  verifyPublication?: (revision: unknown, offer: unknown, descriptor: unknown) => { valid: boolean } | Promise<{ valid: boolean }>;
 }
 
 export type LiveResult =
@@ -31,6 +39,7 @@ export function exportLiveEvidence(outcome: Extract<LiveResult, { terminal: true
   const a = outcome.artifacts;
   return { schema: 'froglet.public-demo.evidence.v1', input: outcome.run.input, result: outcome.result ?? null,
     status: outcome.status, ...(outcome.failure ? { failure: outcome.failure } : {}),
+    ...(outcome.run.publishedService ? { publication_revision: outcome.run.publishedService.revision } : {}),
     artifacts: [a.descriptor, a.offer, a.quote, a.deal, a.receipt] };
 }
 
@@ -67,6 +76,20 @@ function workload(run: LiveRun, kernel: Kernel): string {
   return kernel.hashJson(run.request.execution);
 }
 
+/** An active offer may keep its immutable link to an earlier signed descriptor. */
+async function descriptorForOffer(deps: LiveDeps, offer: SignedArtifact, current: SignedArtifact): Promise<SignedArtifact> {
+  const expected = offer.payload.descriptor_hash;
+  need(publicHash(expected), 'The offer has an invalid provider-description reference.');
+  if (expected === current.hash) return current;
+  const response = await deps.transport({ method: 'GET', path: '/v1/artifacts/' + expected });
+  need(response.status === 200, reason(response));
+  const record = response.body as { hash: unknown; kind: unknown; actor_id: unknown; document: SignedArtifact };
+  need(record?.hash === expected && record.kind === 'descriptor' && record.actor_id === deps.providerId && record.document?.hash === expected && record.document.signer === deps.providerId && record.document.payload?.provider_id === deps.providerId, 'The referenced provider description has a different identity, type or hash.');
+  document(deps, record.document, 'descriptor');
+  need(currentDocument(record.document), 'The referenced provider description has expired.');
+  return record.document;
+}
+
 /** Prepare and sign in the browser. Only public artifacts, never its private seed, enter the saved run. */
 export async function prepareLiveRun(deps: LiveDeps, inputText: string, module?: Uint8Array): Promise<LiveRun> {
   const input = parsedInput(inputText);
@@ -75,7 +98,7 @@ export async function prepareLiveRun(deps: LiveDeps, inputText: string, module?:
   deps.onStep?.('discover');
   const descriptorResponse = await deps.transport({ method: 'GET', path: '/v1/provider/descriptor' });
   need(descriptorResponse.status === 200, reason(descriptorResponse));
-  const descriptor = descriptorResponse.body as SignedArtifact;
+  let descriptor = descriptorResponse.body as SignedArtifact;
   document(deps, descriptor, 'descriptor');
   need(descriptor.payload.provider_id === deps.providerId, 'This is a different provider.');
   const offersResponse = await deps.transport({ method: 'GET', path: '/v1/provider/offers' });
@@ -84,6 +107,8 @@ export async function prepareLiveRun(deps: LiveDeps, inputText: string, module?:
   const offer = (offersResponse.body as { offers: SignedArtifact[] }).offers?.find(o => o.payload.offer_id === offerId);
   need(offer, 'The selected demo is not published.');
   document(deps, offer!, 'offer');
+  need(offer!.payload.provider_id === deps.providerId, 'The offer belongs to a different provider.');
+  descriptor = await descriptorForOffer(deps, offer!, descriptor);
   need(offer!.payload.provider_id === deps.providerId && offer!.payload.descriptor_hash === descriptor.hash, 'The offer is not bound to this provider description.');
   need(offer!.payload.settlement_method === 'none' && offer!.payload.price_schedule?.base_fee_msat === 0 && offer!.payload.price_schedule?.success_fee_msat === 0, 'This demo accepts free work only.');
   let spec: { kind: 'wasm'; submission: any } | { kind: 'execution'; execution: any };
@@ -117,11 +142,77 @@ export async function prepareLiveRun(deps: LiveDeps, inputText: string, module?:
   return run;
 }
 
+const operationGrant = (profile: PublishedServiceProfile) => `net.http.operation.${profile.operationHash}`;
+const exactGrant = (grants: unknown, profile: PublishedServiceProfile) => Array.isArray(grants) && grants.length === 1 && grants[0] === operationGrant(profile);
+const sameProfile = (a: PublishedServiceProfile, b: PublishedServiceProfile) => profileFields.every(key => a[key as keyof PublishedServiceProfile] === b[key as keyof PublishedServiceProfile]);
+const currentDocument = (doc: SignedArtifact) => doc.payload.expires_at === undefined || doc.payload.expires_at === null || Number.isSafeInteger(doc.payload.expires_at) && doc.payload.expires_at >= Math.floor(Date.now() / 1000);
+
+function publishedInput(serviceId: PublicHttpServiceId, input: unknown): boolean {
+  if (!object(input)) return false;
+  const search = serviceId === 'marketplace-search', provider = serviceId === 'marketplace-provider';
+  const allowed = provider ? ['provider_id'] : search ? ['provider_id', 'offer_kind', 'runtime', 'availability', 'limit', 'offset'] : ['provider_id', 'limit', 'offset', 'updated_since'];
+  if (Object.keys(input).some(key => !allowed.includes(key)) || (!search && !publicHash(input.provider_id)) || (input.provider_id !== undefined && !publicHash(input.provider_id))) return false;
+  if (input.limit !== undefined && (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 20)) return false;
+  if (input.offset !== undefined && (!Number.isSafeInteger(input.offset) || input.offset < 0 || input.offset > 1000)) return false;
+  if (input.updated_since !== undefined && (!Number.isSafeInteger(input.updated_since) || input.updated_since < 0)) return false;
+  return (input.offer_kind === undefined || typeof input.offer_kind === 'string' && /^[a-z0-9][a-z0-9._-]{0,63}$/.test(input.offer_kind)) && (input.runtime === undefined || ['builtin', 'wasm', 'any'].includes(input.runtime)) && (input.availability === undefined || ['discoverable', 'healthy', 'offline', 'unknown', 'all'].includes(input.availability));
+}
+
+function publishedQuote(quote: SignedArtifact, profile: PublishedServiceProfile) {
+  const q = quote.payload, l = q.execution_limits, t = q.settlement_terms;
+  need(q.provider_id === PUBLIC_DEMO.providerId && q.descriptor_hash === profile.descriptorHash && q.offer_hash === profile.offerHash && q.workload_kind === 'compute.execution.v1' && exactGrant(q.capabilities_granted, profile), 'The quote grants different work or capabilities.');
+  need(t?.method === 'none' && t.base_fee_msat === 0 && t.success_fee_msat === 0, 'This service accepts free work only.');
+  need(l && Number.isSafeInteger(l.max_runtime_ms) && l.max_runtime_ms > 0 && l.max_runtime_ms <= PUBLIC_DEMO.maxRuntimeMs && Number.isSafeInteger(l.max_memory_bytes) && l.max_memory_bytes > 0 && l.max_memory_bytes <= PUBLIC_DEMO.maxMemoryBytes && Number.isSafeInteger(l.fuel_limit) && l.fuel_limit > 0 && l.fuel_limit <= PUBLIC_DEMO.maxFuel && Number.isSafeInteger(l.max_input_bytes) && l.max_input_bytes > 0 && l.max_input_bytes <= PUBLIC_MARKETPLACE_READ.maxRequestBytes && Number.isSafeInteger(l.max_output_bytes) && l.max_output_bytes > 0 && l.max_output_bytes <= PUBLIC_MARKETPLACE_READ.maxResponseBytes, 'The quote exceeds the published tool bounds.');
+}
+
+function publishedRevision(revision: any, profile: PublishedServiceProfile) {
+  const p = profile;
+  need(revision?.revision_hash === p.revisionHash && revision.payload?.provider_id === PUBLIC_DEMO.providerId && revision.payload.service_id === p.serviceId && revision.payload.offer_id === p.offerId && revision.payload.offer_hash === p.offerHash && revision.payload.binding_hash === p.bindingHash && revision.payload.runtime === 'wasm' && revision.payload.package_kind === 'inline_module' && revision.payload.service?.entrypoint === p.entrypoint && revision.payload.service.entrypoint_kind === 'module' && revision.payload.service.contract_version === 'froglet.wasm.host_json.v1' && exactGrant(revision.payload.service.capabilities, p), 'The publication revision does not match this tool.');
+}
+
+/** Call only one of the site's three explicitly enabled, pinned HTTP-operation publications. */
+export async function preparePublishedServiceRun(deps: LiveDeps, serviceId: string, inputText: string): Promise<LiveRun> {
+  const profiles = publishedServiceProfiles({ providerId: deps.providerId, publishedServices: { enabled: true, profiles: deps.publishedServices } });
+  const profile = profiles.find(p => p.serviceId === serviceId);
+  need(profile && deps.verifyPublication, 'This published tool is not enabled on this site.');
+  const p = profile!, input = parsedInput(inputText);
+  need(publishedInput(p.serviceId, input) && new TextEncoder().encode(deps.kernel.canonicalize(input)).length <= PUBLIC_MARKETPLACE_READ.maxRequestBytes, 'Enter a supported bounded public catalog query.');
+  deps.onStep?.('discover');
+  const d = await deps.transport({ method: 'GET', path: '/v1/provider/descriptor' });
+  need(d.status === 200, reason(d)); const descriptor = d.body as SignedArtifact; document(deps, descriptor, 'descriptor');
+  need(descriptor.hash === p.descriptorHash && descriptor.payload.provider_id === PUBLIC_DEMO.providerId && currentDocument(descriptor), 'The provider description does not match this current published tool.');
+  const offers = await deps.transport({ method: 'GET', path: '/v1/provider/offers' }); need(offers.status === 200, reason(offers));
+  const offer = (offers.body as { offers: SignedArtifact[] }).offers?.find(o => o.payload.offer_id === p.offerId);
+  need(offer, 'The selected tool is not published.'); document(deps, offer!, 'offer');
+  need(offer!.hash === p.offerHash && offer!.payload.provider_id === PUBLIC_DEMO.providerId && offer!.payload.descriptor_hash === p.descriptorHash && offer!.payload.offer_kind === 'compute.execution.v1' && currentDocument(offer!) && offer!.payload.settlement_method === 'none' && offer!.payload.price_schedule?.base_fee_msat === 0 && offer!.payload.price_schedule.success_fee_msat === 0, 'The offer does not match the current pinned free tool.');
+  const answer = await deps.transport({ method: 'GET', path: '/v1/provider/services/' + p.serviceId }); need(answer.status === 200, reason(answer));
+  const { service, publication_revision: revision } = answer.body as { service: ServiceRecord; publication_revision: any };
+  need(service?.provider_id === PUBLIC_DEMO.providerId && service.service_id === p.serviceId && service.offer_id === p.offerId && service.offer_kind === 'compute.execution.v1' && service.runtime === 'wasm' && service.package_kind === 'inline_module' && service.entrypoint_kind === 'module' && service.entrypoint === p.entrypoint && service.contract_version === 'froglet.wasm.host_json.v1' && service.mode === 'sync' && service.publication_state === 'active' && service.module_hash === p.moduleHash && service.binding_hash === p.bindingHash && exactGrant(service.capabilities, p) && (!service.mounts || service.mounts.length === 0) && service.settlement_method === 'none' && service.base_fee_msat === 0 && service.success_fee_msat === 0, 'The native service metadata does not match the approved tool.');
+  publishedRevision(revision, p);
+  need((await deps.verifyPublication!(revision, offer, descriptor)).valid, 'The signed publication revision does not verify.');
+  const execution = executionFor(service, input, deps.kernel, service.capabilities!);
+  const requester = deps.kernel.newIdentity(); deps.onStep?.('quote');
+  const quoted = await deps.transport({ method: 'POST', path: '/v1/provider/quotes', body: { offer_id: p.offerId, requester_id: requester.public_key, kind: 'execution', execution, max_price_sats: 0 } }); need(quoted.status === 201, reason(quoted));
+  const quote = quoted.body as SignedArtifact; document(deps, quote, 'quote'); publishedQuote(quote, p);
+  need(quote.payload.requester_id === requester.public_key && quote.payload.workload_hash === deps.kernel.hashJson(execution), 'The quote is for different input or another requester.');
+  const now = Math.floor(Date.now() / 1000); need(Number.isSafeInteger(quote.payload.expires_at) && quote.payload.expires_at >= now, 'The quote has expired; no job was submitted.');
+  const deal = deps.kernel.sign(requester.seed_hex, 'deal', now, dealPayloadFor(quote, requester.public_key, randomHex(32)));
+  const run: LiveRun = { schema: 'froglet.public-demo.run.v1', providerId: deps.providerId, input, request: { kind: 'execution', execution, quote, deal, idempotency_key: randomHex(16) }, artifacts: { descriptor, offer: offer!, quote, deal }, publishedService: { profile: p, revision } };
+  deps.save?.(run); return run;
+}
+
 function validateSavedRun(deps: LiveDeps, run: LiveRun) {
   need(run.schema === 'froglet.public-demo.run.v1' && run.providerId === deps.providerId, 'The saved job belongs to a different provider.');
   for (const [kind, value] of Object.entries(run.artifacts)) document(deps, value, kind);
   const { descriptor, offer, quote, deal } = run.artifacts;
   const q = quote.payload;
+  if (run.publishedService) {
+    const p = run.publishedService.profile, e = run.request.execution;
+    need(run.providerId === PUBLIC_DEMO.providerId && validProfile(p) && e?.runtime === 'wasm' && e.package_kind === 'inline_module' && e.contract_version === 'froglet.wasm.host_json.v1' && e.entrypoint?.kind === 'module' && e.entrypoint.value === p.entrypoint && e.module_hash === p.bindingHash && e.security?.mode === 'standard' && e.security.service_id === p.serviceId && exactGrant(e.requested_access, p), 'The saved published tool authority has changed.');
+    publishedRevision(run.publishedService.revision, p);
+    publishedQuote(quote, p);
+    if (!run.dealId) need(deps.publishedServices?.some(current => sameProfile(current, p)), 'This unsubmitted tool is no longer enabled.');
+  }
   need(descriptor.payload.provider_id === deps.providerId && offer.payload.provider_id === deps.providerId && q.provider_id === deps.providerId && deal.payload.provider_id === deps.providerId, 'The saved provider binding is invalid.');
   need(q.descriptor_hash === descriptor.hash && q.offer_hash === offer.hash && q.workload_hash === workload(run, deps.kernel) && deal.payload.workload_hash === q.workload_hash && deal.payload.quote_hash === quote.hash && deal.payload.requester_id === q.requester_id, 'The saved commitments do not match.');
   need(deps.kernel.canonicalize(run.request.quote) === deps.kernel.canonicalize(quote) && deps.kernel.canonicalize(run.request.deal) === deps.kernel.canonicalize(deal), 'The saved submission does not match its evidence.');
@@ -139,6 +230,7 @@ function finished(deps: LiveDeps, run: LiveRun, record: DealRecord): LiveResult 
   need(r.provider_id === deps.providerId && r.requester_id === deal.payload.requester_id && r.deal_hash === deal.hash && r.quote_hash === quote.hash && r.deal_state === record.status, 'The receipt belongs to different work.');
   if (record.status === 'succeeded') need(record.result !== undefined && record.result_hash === deps.kernel.hashJson(record.result) && r.result_hash === record.result_hash, 'The result does not match the signed receipt.');
   if (run.request.kind === 'wasm') need(r.executor?.module_hash === run.request.submission.workload.module_hash, 'The receipt names a different program.');
+  if (run.publishedService) need(r.executor?.runtime === 'wasm' && r.executor.abi_version === 'froglet.wasm.host_json.v1' && r.executor.module_hash === run.publishedService.profile.moduleHash && exactGrant(r.executor.capabilities_granted, run.publishedService.profile), 'The receipt names different code or execution capabilities.');
   deps.onStep?.('verify');
   const artifacts = { ...run.artifacts, receipt: receipt! };
   const chain = deps.verifier.validateChain([artifacts.descriptor, artifacts.offer, artifacts.quote, artifacts.deal, artifacts.receipt]);
@@ -149,6 +241,7 @@ function finished(deps: LiveDeps, run: LiveRun, record: DealRecord): LiveResult 
 /** Retries use the saved signed body and key. A known accepted job is read, never submitted again. */
 export async function resumeLiveRun(deps: LiveDeps, run: LiveRun, maxPolls = 16): Promise<LiveResult> {
   validateSavedRun(deps, run);
+  if (run.publishedService) need(deps.verifyPublication && (await deps.verifyPublication(run.publishedService.revision, run.artifacts.offer, run.artifacts.descriptor)).valid, 'The saved publication revision does not verify.');
   const sleep = deps.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   try {
     let record: DealRecord;

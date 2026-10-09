@@ -6,6 +6,7 @@ import { src } from './route-helpers';
 
 const mocks = vi.hoisted(() => ({
   compile: vi.fn(), dispose: vi.fn(), prepare: vi.fn(), resume: vi.fn(),
+  preparePublished: vi.fn(),
 }));
 vi.mock('../playground/compiler', () => ({
   browserCompilerWorker: vi.fn(),
@@ -14,8 +15,9 @@ vi.mock('../playground/compiler', () => ({
 vi.mock('../playground/kernel', () => ({
   loadKernel: async () => ({}), loadPlaygroundVerifier: async () => ({}),
 }));
-vi.mock('../live-service-client', () => ({
-  prepareLiveRun: mocks.prepare, resumeLiveRun: mocks.resume,
+vi.mock('../live-service-client', async importOriginal => ({
+  ...await importOriginal<typeof import('../live-service-client')>(),
+  prepareLiveRun: mocks.prepare, preparePublishedServiceRun: mocks.preparePublished, resumeLiveRun: mocks.resume,
   exportLiveEvidence: (outcome: unknown) => ({ outcome }),
 }));
 
@@ -113,4 +115,40 @@ test('the public beta’s local playground link names a real page and section', 
   const target = readFileSync(resolve(src, 'pages', url.pathname.split('/').filter(Boolean).join('/') + '.astro'), 'utf8');
   const targetDom = new DOMParser().parseFromString(target, 'text/html');
   expect(targetDom.getElementById(url.hash.slice(1))).not.toBeNull();
+});
+
+const publicProvider = 'c7a15140cc28833978197bdef7daf30e419502f186f59ff88584f453531ea894';
+const publishedProfiles = ['marketplace-provider', 'marketplace-search', 'marketplace-receipts'].map((serviceId, i) => ({ serviceId, offerId: serviceId, offerHash: String(i + 1).repeat(64), bindingHash: String(i + 4).repeat(64), moduleHash: String(i + 4).repeat(64), descriptorHash: 'a'.repeat(64), revisionHash: String(i + 7).repeat(64), operationHash: ['b', 'c', 'd'][i].repeat(64), entrypoint: 'run' }));
+
+test('additional query controls remain hidden when the classic config does not explicitly enable pinned publications', () => {
+  expect($<HTMLElement>('[data-published-tools]').hidden).toBe(true);
+  expect($<HTMLButtonElement>('[data-run-published]').disabled).toBe(true);
+  expect(mocks.preparePublished).not.toHaveBeenCalled();
+});
+
+test('explicit pinned config enables the selected published query with a bounded example and no compilation', async () => {
+  hide(false); sessionStorage.clear(); document.body.innerHTML = markup;
+  vi.mocked(fetch).mockImplementation(async (url: any) => new Response(JSON.stringify(String(url).endsWith('/config') ? { providerId: publicProvider, publishedServices: { enabled: true, profiles: publishedProfiles } } : { remaining: { deals: 1000 } })));
+  const profile = publishedProfiles[0];
+  const run = { providerId: publicProvider, input: { provider_id: publicProvider }, request: { kind: 'execution' }, publishedService: { profile, revision: { revision_hash: profile.revisionHash } } };
+  mocks.preparePublished.mockImplementation(async (deps: any) => { deps.save(run); return run; });
+  mocks.resume.mockResolvedValue({ terminal: true, status: 'succeeded', result: { provider: null }, run });
+  startLiveServices();
+  await vi.waitFor(() => expect($<HTMLButtonElement>('[data-run-published]').disabled).toBe(false));
+  expect($<HTMLElement>('[data-published-tools]').hidden).toBe(false);
+  expect(JSON.parse($<HTMLTextAreaElement>('[data-published-input]').value)).toEqual({ provider_id: publicProvider });
+  $<HTMLButtonElement>('[data-run-published]').click(); await result();
+  expect(mocks.preparePublished).toHaveBeenCalledWith(expect.anything(), 'marketplace-provider', expect.any(String));
+  expect(mocks.compile).not.toHaveBeenCalled();
+  expect($('[data-program-commitment]').textContent).toContain(profile.moduleHash);
+  expect($('[data-recovery-note]').textContent).toContain('published contract');
+});
+
+test('malformed explicit config cannot enable a named tool or replace an edited classic program', async () => {
+  hide(false); document.body.innerHTML = markup;
+  const malformed = structuredClone(publishedProfiles); malformed[0].operationHash = 'wrong';
+  vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify({ providerId: publicProvider, publishedServices: { enabled: true, profiles: malformed } })));
+  startLiveServices(); await ready();
+  expect($<HTMLElement>('[data-published-tools]').hidden).toBe(true);
+  expect($<HTMLButtonElement>('[data-run-published]').disabled).toBe(true);
 });

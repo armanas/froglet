@@ -21,7 +21,8 @@ its known Astro dependency effects. The previous guard correctly refused the
 newly published 4.3.0 before this review. This update retains a temporary
 **application applicability review** of the observed behavior. All other
 high/critical findings, audit/registry errors, or failed applicability checks
-block the job. The review expires at **2026-10-17 00:00 UTC**, or earlier when a
+block the job. The review expires at **2026-11-16 00:00 UTC** (extended on
+9 October from 17 October; see below), or earlier when a
 stable version newer than the reviewed 4.3.0 is published. A clean raw audit
 still requires the version, source, configuration, registry, and actual Worker
 bundle checks below.
@@ -189,3 +190,93 @@ This source/configuration requalification does not remediate the known
 expiry, newer-version refusal, complete graph and byte checks, mandatory
 audit/registry/bundle review even with a clean audit, and all existing rejection
 controls are unchanged; no advisory exception is added or widened.
+
+
+### 7 October 2026 published-tool bridge source review
+
+The reviewed Worker adds a disabled-by-default policy/transport bridge for
+three fixed C7 publications: `marketplace-provider`, `marketplace-search`,
+and `marketplace-receipts`. The shared public-profile parser requires the
+complete three-service set and nine exact public fields per profile; it rejects
+extra fields, mismatched provider identities, invalid digests and an authoring
+filename in place of the runtime `run` entrypoint. Requests remain bound to
+the fixed provider origin, installed Wasm bytes, one approved HTTP-operation
+capability, free terms and the declared resource limits. Native admission
+remains authoritative for signatures and actual workload commitments; the
+browser independently verifies its received evidence with the existing Rust
+verifier. No cryptographic dependency was added to the Worker.
+
+A single absolute 15-second transport deadline now covers admission, request
+body, fetch and response body for both original and named demo routes. Late
+admission cannot initiate forwarding, and cancellation acknowledgement cannot
+extend the response deadline. Native-shaped public metadata is restricted to
+pinned interfaces, the declared read schemas, typed public build/local
+verification evidence and bounded public starters. Mocked private-field
+reproductions demonstrated policy gaps before these checks; they were not
+observations of private data returned by a real native node.
+
+The reviewed configuration is still the exact prior `wrangler.jsonc`: the
+published-service enable flag and public-profile JSON are absent, so the three
+named tools remain disabled. Later production activation requires actual
+verified publication pins in
+`FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_JSON`, the explicit
+`FROGLET_PUBLIC_DEMO_PUBLISHED_SERVICES_ENABLED` flag, and a fresh review of
+the exact configuration and emitted Worker before deployment. The strict
+Worker parser does not waive the guard's configuration hash: any configuration
+change remains blocking until requalified. No placeholder pins are admitted to
+production by this source review.
+
+An isolated physical copy of the complete current source and dependency
+installation emitted a fresh Wrangler 4.143.1 production dry-run with the same
+thirteen sources. Every source-map entry matched its actual file, the
+complete JavaScript contained no affected cache-policy code, and the separate
+verifier Wasm asset was unchanged. The minimal guard delta updates only these
+two source hashes and the complete normalized Worker hash:
+
+| Reviewed bytes | SHA-256 |
+| --- | --- |
+| `src/data/public-demo-config.ts` | `654da53b91039d812c1587c83e1e79a7c4c57c9bf6e1cd20ad79443ce5ace082` |
+| `src/data/public-demo-proxy.ts` | `31b58b9ea1beab8bad8e0ee196023f87f2b71e83b383ada9563f3d17d490dc7c` |
+| Complete normalized Worker | `404affed5f2a42211d483a2b3830e8b64c760a5cbcb72f12a7d4379115db2d30` |
+
+The raw Worker SHA-256 is
+`12adeda965afb00e75526fefc8870d6d9bd0fd2a5670633002a5d4044cd3463f`.
+Normalization still changes only the one generated verifier Wasm filename; no
+JavaScript is omitted. Dependency versions, consumer graph, static-output and
+configuration pins, advisory identity checks and expiry are unchanged. This
+is source/configuration qualification, not native publication, live canary,
+public execution or cloud-capacity qualification. The observed
+`http-cache-semantics` 4.3.0 behavior remains unremediated, and the application
+review still expires at **2026-10-17 00:00 UTC**.
+
+The exact isolated source passed **931 website tests** with **29 native/remote
+opt-in tests skipped**, including all **72 deployment-guard tests**. The static
+build produced 39 pages using the twelve separately hash-bound generated
+inputs; no Rust rebuild or native execution was performed in this qualification.
+An actual mandatory guard run against the official npm registry also passed.
+The raw audit reported zero high/critical findings, and the source, registry
+and fresh bundle gates still ran. All source files remained unchanged across
+validation except the three explicit guard fingerprints and this documentation
+update. These checks add no advisory allowance or publication claim.
+
+### 9 October 2026 artifact-read route and expiry extension
+
+Commit `505731e` lets the public demo Worker proxy exact
+`GET /v1/artifacts/<64-hex hash>` reads and rejects a provider reply whose
+`hash` differs from the requested one. A fresh Wrangler 4.143.1 dry-run built
+with the previous `public-demo-proxy.ts` reproduced the reviewed normalized
+Worker hash `404affed…` exactly; the current source differs from it by only
+those three lines of the artifact-read route, and the complete JavaScript
+still contains no affected cache-policy code. The guard delta updates only
+these two fingerprints:
+
+| Reviewed bytes | SHA-256 |
+| --- | --- |
+| `src/data/public-demo-proxy.ts` | `615669bbded5ba359cd1743112390b0f0300bd84e9d41280765552bc1b05e7e4` |
+| Complete normalized Worker | `0c528697ee570a2802b16b25b69f287ba20faf2577e95276047a94cb467e7990` |
+
+The application review was extended, with owner approval, from
+**2026-10-17** to **2026-11-16 00:00 UTC**. No stable `http-cache-semantics`
+release newer than 4.3.0 exists on the npm registry as of this review, and
+the observed max-stale/shared-cookie behavior remains unremediated. Versions,
+consumer graph, configuration pins and advisory identity checks are unchanged.

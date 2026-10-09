@@ -249,9 +249,9 @@ describe('reviewed website applicability boundaries', () => {
     expect(() => validateApplicability(context)).toThrow(/version/);
   });
 
-  it('expires at the beginning of October 17 UTC', () => {
+  it('expires at the beginning of November 16 UTC', () => {
     const context = copy();
-    context.now = new Date('2026-10-17T00:00:00Z');
+    context.now = new Date('2026-11-16T00:00:00Z');
     expect(() => validateApplicability(context)).toThrow(/expired/);
   });
 

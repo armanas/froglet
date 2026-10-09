@@ -4,9 +4,11 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import time
+import tomllib
 import urllib.request
 
 ROOT = Path('/state')
@@ -14,6 +16,54 @@ DATA = ROOT / 'node'
 BINARY = Path('/app/froglet-node')
 BINARY_SHA = '5afdbaf98f7aa2eb10cff3c29dbeca25d099e421a46a4cff40439aeaf3a25b77'
 children = []
+
+
+def verify_approved_http_policy():
+    """Optional named tools require the exact public profile and HTTP policy."""
+    from provider_proxy import approved_profile_settings, load_approved_services
+
+    settings = approved_profile_settings()
+    if settings is None:
+        return
+    expected = ROOT / 'expected-provider-id'
+    if expected.is_symlink() or not expected.is_file():
+        raise RuntimeError('approved-http-existing-identity-required')
+    services = load_approved_services(*settings, expected.read_text().strip(), root=ROOT)
+    if not services:
+        return
+    policy_path = os.environ.get('FROGLET_WASM_POLICY_PATH')
+    policy_sha = os.environ.get('FROGLET_PUBLIC_DEMO_HTTP_POLICY_SHA256')
+    if policy_path != str(ROOT / 'approved-http-policy.toml') or not policy_sha:
+        raise RuntimeError('approved-http-exact-policy-required')
+    descriptor = os.open(policy_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as file:
+        info = os.fstat(file.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.geteuid()}
+                or info.st_mode & 0o022 or not 0 < info.st_size <= 32768):
+            raise RuntimeError('approved-http-policy-not-protected')
+        raw = file.read(32769)
+    if hashlib.sha256(raw).hexdigest() != policy_sha:
+        raise RuntimeError('approved-http-policy-digest-mismatch')
+    policy = tomllib.loads(raw.decode('utf-8'))
+    expected_http = {
+        'operations_only': True,
+        'operation_hashes': sorted(service['operation_hash'] for service in services.values()),
+        'allowed_hosts': ['froglet.dev'],
+        'allow_private_networks': False,
+        'max_calls_per_execution': 1,
+        'max_timeout_ms': 2000,
+        'max_request_body_bytes': 2048,
+        'max_response_body_bytes': 131072,
+        'max_redirects': 0,
+    }
+    # No auth profiles, general HTTP, extra hosts or capabilities enter this
+    # credential-free public tool profile. Preserve the existing native limits.
+    actual_http = policy.get('http')
+    if (set(policy) != {'http'} or not isinstance(actual_http, dict)
+            or set(actual_http) != set(expected_http)
+            or any(type(actual_http[key]) is not type(value)
+                   or actual_http[key] != value for key, value in expected_http.items())):
+        raise RuntimeError('approved-http-policy-scope-mismatch')
 
 
 def stop(*_):
@@ -46,6 +96,7 @@ def main():
                 raise RuntimeError('existing-state-required-no-refill')
     if hashlib.sha256(BINARY.read_bytes()).hexdigest() != BINARY_SHA:
         raise RuntimeError('released-runtime-digest-mismatch')
+    verify_approved_http_policy()
     os.environ.update({
         'FROGLET_DATA_ROOT': str(DATA), 'FROGLET_DB_PATH': str(DATA / 'node.db'),
         'FROGLET_PROVIDER_CONTROL_TOKEN_PATH': str(DATA / 'runtime/froglet-control.token'),

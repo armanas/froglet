@@ -87,6 +87,8 @@ export interface ServiceRecord {
   provider_id: string;
   module_hash: string;
   binding_hash: string;
+  capabilities?: string[];
+  mounts?: unknown[];
 }
 
 /** The states a node's deal passes through (docs/openapi.yaml, DealRecord). This provider only ever says accepted, succeeded, or failed. */

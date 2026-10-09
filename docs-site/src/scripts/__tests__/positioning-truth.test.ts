@@ -15,7 +15,7 @@ function readRepoFile(path: string): string {
  * bans belong on the top-of-funnel surfaces, which reach far more readers and
  * were previously unguarded — the homepage stated an unimplemented staking
  * mechanism in the present tense while the demo copy was forbidden from doing
- * so (DISCOVERY.md finding F3).
+ * so.
  */
 const TOP_OF_FUNNEL = [
   'docs-site/src/pages/index.astro',
@@ -62,7 +62,7 @@ describe('top-of-funnel positioning truth', () => {
   }
 
   it('keeps the artifact-count claim consistent with the kernel', () => {
-    // DISCOVERY.md F7: comparison.mdx said "six-artifact chain" then listed
+    // comparison.mdx once said "six-artifact chain" then listed
     // five. The kernel defines six chain artifacts including InvoiceBundle.
     const comparison = readRepoFile('docs-site/src/content/docs/learn/comparison.mdx');
     const sixArtifact = comparison.match(/\*\*Signed (\w+)-artifact chain\*\*[^|]*/);

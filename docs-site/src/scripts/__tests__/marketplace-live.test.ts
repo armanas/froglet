@@ -21,7 +21,15 @@ function page() {
     <span data-marketplace-field="message"></span>
     <table><tbody data-marketplace-provider-table></tbody></table></main>`;
 }
-function dashboard() { document.body.innerHTML = dashboardMarkup; }
+function dashboard(includeArchive = true) {
+  document.body.innerHTML = dashboardMarkup;
+  // Generic catalog fixtures exercise the optional full-index scope explicitly.
+  if (includeArchive) {
+    const archive = document.createElement('input'); archive.type = 'checkbox';
+    archive.dataset.marketplaceArchive = ''; archive.checked = true;
+    document.querySelector('.mkt-side')!.append(archive);
+  }
+}
 
 const snapshot = (overrides = {}) => ({
   checkedAt: new Date().toISOString(), status: 'pass', detail: 'Read API available',
@@ -48,6 +56,99 @@ const count = () => $('[data-marketplace-search-count]').textContent;
 const category = (value: string) => $<HTMLInputElement>(`[data-marketplace-categories] input[value="${value}"]`);
 const toggle = (name: 'ready' | 'free') => $<HTMLInputElement>(`[data-marketplace-filter="${name}"]`);
 const type = (input: HTMLInputElement, value: string) => { input.value = value; input.dispatchEvent(new Event('input')); };
+const snapshotCalls = () => vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/marketplace-snapshot').length;
+const archive = () => $<HTMLInputElement>('[data-marketplace-archive]');
+
+const profiles = ['marketplace-provider', 'marketplace-search', 'marketplace-receipts'].map((serviceId, index) => ({
+  serviceId, offerId: serviceId, offerHash: String(index + 1).repeat(64), bindingHash: '7'.repeat(64),
+  revisionHash: '5'.repeat(64), operationHash: '6'.repeat(64), moduleHash: '7'.repeat(64), descriptorHash: '8'.repeat(64), entrypoint: 'run',
+}));
+const enabledConfig = () => ({ providerId: PUBLIC_DEMO.providerId, publishedServices: { enabled: true, profiles } });
+const currentCompute = () => listing({ providerId: PUBLIC_DEMO.providerId, offerId: PUBLIC_DEMO.computeOffer, offerKind: 'compute.wasm.v1', runtime: 'wasm', packageKind: 'inline_module', availability: { ...checked(), admission: 'execution_checked' } });
+const namedRead = (index = 0) => listing({ providerId: PUBLIC_DEMO.providerId, offerId: profiles[index].offerId, offerKind: 'compute.execution.v1', runtime: 'wasm', packageKind: 'inline_module', artifactHash: profiles[index].offerHash, availability: { ...checked(), admission: 'execution_checked' } });
+
+describe('public beta curation and configured actions', () => {
+  it('defaults to supported C7 entries while retaining unknown entries in the optional archive and evidence', async () => {
+    vi.useFakeTimers(); dashboard(false);
+    await refresh(catalog([currentCompute(), listing({ offerId: 'events.query', offerKind: 'events.query' })], { offerCount: 50 }));
+    expect(shown()).toEqual(['Run a WebAssembly job']);
+    expect(items()).toHaveLength(2);
+    expect(archive().checked).toBe(false);
+    expect(field('scope')).toContain('Public beta: 1 loaded offer');
+    expect(field('scope')).toContain('Archive: 1 loaded offer');
+    expect(field('scope')).toContain('Index: 50 offers; 2 loaded');
+    expect(document.querySelectorAll('[data-marketplace-offer-book] tr')).toHaveLength(2);
+    archive().click();
+    expect(shown()).toEqual(['Run a WebAssembly job', 'Read node events']);
+    expect(items()[1].querySelector('.service-availability')!.textContent).toBe('Availability not confirmed');
+    expect(field('scope')).toContain('Archive included');
+  });
+
+  it('loads local configuration once, requires its exact artifact and hides new Try links when a lease expires without closing details', async () => {
+    vi.useFakeTimers(); dashboard(false);
+    vi.stubGlobal('fetch', vi.fn(async (url) => new Response(JSON.stringify(String(url) === '/api/public-demo/config' ? enabledConfig() : catalog([namedRead()])))));
+    initMarketplaceLive(); await vi.advanceTimersByTimeAsync(0);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/public-demo/config')).toHaveLength(1);
+    expect(shown()).toEqual(['Marketplace Provider']);
+    expect($<HTMLAnchorElement>('[data-marketplace-public-demo]').getAttribute('href')).toBe('/services/?service=marketplace-provider#try-it');
+    $('[data-marketplace-toggle]').click();
+    const renewed = catalog([namedRead()]);
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify(renewed)));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(vi.mocked(fetch).mock.calls.filter(([url]) => url === '/api/public-demo/config')).toHaveLength(1);
+    expect($('[data-marketplace-toggle]').getAttribute('aria-expanded')).toBe('true');
+    expect($<HTMLElement>('.mkt-detail').hidden).toBe(false);
+    await vi.advanceTimersByTimeAsync(61_000);
+    expect(document.querySelector('[data-marketplace-public-demo]')).toBeNull();
+    expect($('[data-marketplace-toggle]').getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it.each([{}, { providerId: PUBLIC_DEMO.providerId, publishedServices: { enabled: false, profiles } }])('keeps named actions closed for disabled or absent configuration', async config => {
+    vi.useFakeTimers(); dashboard(false);
+    vi.stubGlobal('fetch', vi.fn(async (url) => new Response(JSON.stringify(String(url) === '/api/public-demo/config' ? config : catalog([namedRead()])))));
+    initMarketplaceLive(); await vi.advanceTimersByTimeAsync(0);
+    expect(document.querySelector('[data-marketplace-public-demo]')).toBeNull();
+    expect(shown()).toEqual(['Marketplace Provider']);
+    expect(archive().checked).toBe(false);
+  });
+
+  it('does not link a different named artifact or an unexecuted check even when configuration is enabled', async () => {
+    vi.useFakeTimers(); dashboard(false);
+    const offers = [namedRead(0), { ...namedRead(1), artifactHash: 'a'.repeat(64) }, { ...namedRead(2), availability: { ...checked(), admission: 'unknown' } }];
+    vi.stubGlobal('fetch', vi.fn(async url => new Response(JSON.stringify(String(url) === '/api/public-demo/config' ? enabledConfig() : catalog(offers)))));
+    initMarketplaceLive(); await vi.advanceTimersByTimeAsync(0);
+    expect(shown()).toHaveLength(3);
+    const actions = Array.from(document.querySelectorAll<HTMLAnchorElement>('[data-marketplace-public-demo]'));
+    expect(actions.map(action => action.getAttribute('href'))).toEqual(['/services/?service=marketplace-provider#try-it', '/services/?service=marketplace-provider#try-it']);
+  });
+
+  it('keeps a failed-refresh snapshot stale when delayed local configuration arrives', async () => {
+    vi.useFakeTimers(); dashboard(false);
+    let deliverConfig!: (response: Response) => void;
+    const configResponse = new Promise<Response>(resolve => { deliverConfig = resolve; });
+    vi.stubGlobal('fetch', vi.fn(async url => String(url) === '/api/public-demo/config' ? configResponse : new Response(JSON.stringify(catalog([namedRead()])))));
+    initMarketplaceLive(); await vi.advanceTimersByTimeAsync(0);
+    vi.mocked(fetch).mockRejectedValue(new Error('catalog offline'));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect($('[data-marketplace-field="refresh"]').textContent).toBe('STALE');
+    deliverConfig(new Response(JSON.stringify(enabledConfig())));
+    await vi.advanceTimersByTimeAsync(0);
+    expect($('[data-marketplace-field="refresh"]').textContent).toBe('STALE');
+    expect($('[data-marketplace-live]').dataset.status).toBe('stale');
+    expect($('.service-availability').textContent).toBe('Status needs refresh');
+    expect(document.querySelector('[data-marketplace-public-demo]')).toBeNull();
+  });
+
+  it('keeps visitor filters, search and archive choice through snapshot refresh', async () => {
+    vi.useFakeTimers(); dashboard(false);
+    await refresh(catalog([currentCompute(), listing({ offerId: 'events.query', offerKind: 'events.query' })]));
+    archive().click(); category('events').click(); toggle('free').click();
+    type($<HTMLInputElement>('[data-marketplace-search]'), 'events');
+    await respond(catalog([currentCompute(), listing({ offerId: 'events.query', offerKind: 'events.query' })]));
+    expect(archive().checked).toBe(true); expect(category('events').checked).toBe(true); expect(toggle('free').checked).toBe(true);
+    expect(shown()).toEqual(['Read node events']);
+  });
+});
 
 async function refresh(body: unknown, status = 200) {
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), { status })));
@@ -160,13 +261,13 @@ describe('the live dashboard header', () => {
     expect(field('receipts')).toBe('10');
     expect(field('successRate')).toBe('90%');
     expect(field('settledSats')).toBe('12sats');
-    expect(field('scope')).toBe('Showing 3 of 30 indexed offers. Search and filters cover only the offers loaded here.');
+    expect(field('scope')).toBe('Public beta: 0 loaded offers. Archive: 3 loaded offers. Index: 30 offers; 3 loaded. Archive included. Search and filters cover loaded offers only.');
   });
 
   it('says how many indexed offers are shown when the sample is the whole catalog', async () => {
     vi.useFakeTimers(); dashboard();
     await refresh(catalog([listing()]));
-    expect(field('scope')).toBe('Showing all 1 indexed offer.');
+    expect(field('scope')).toBe('Public beta: 0 loaded offers. Archive: 1 loaded offer. Index: 1 offer; 1 loaded. Archive included. Search and filters cover loaded offers only.');
   });
 
   it('counts down to the next check and keeps every age fresh each second', async () => {
@@ -211,6 +312,24 @@ describe('the live dashboard header', () => {
 });
 
 describe('service listing', () => {
+  it('maps the read API installed-Wasm service shape to an exact configured named action', async () => {
+    const rawOffer = {
+      provider_id: PUBLIC_DEMO.providerId, offer_id: profiles[0].offerId, offer_kind: 'compute.execution.v1',
+      runtime: 'wasm', package_kind: 'inline_module', settlement_method: 'none',
+      base_fee_msat: 0, success_fee_msat: 0, artifact_hash: profiles[0].offerHash,
+      availability: { admission: 'execution_checked', status: 'healthy', lease_expires_at: Date.now() / 1000 + 60, last_renewed_at: Date.now() / 1000 },
+    };
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
+      url.endsWith('/healthz') ? { status: 'ok' } : url.includes('/v1/offers?') ? { items: [rawOffer] } : { items: [] }
+    ))));
+    const result = await getMarketplaceSnapshot();
+    expect(result.status).toBe('pass');
+    expect(result.offers[0].offerKind).toBe('compute.execution.v1');
+    expect(result.offers[0].packageKind).toBe('inline_module');
+    expect(publicDemoLink(result.offers[0], profiles)).toBe('/services/?service=marketplace-provider#try-it');
+    expect(publicDemoLink({ ...result.offers[0], artifactHash: 'a'.repeat(64) }, profiles)).toBeUndefined();
+  });
+
   it('maps the captured read-API inline-module compute shape through snapshot normalization', async () => {
     // /v1/offers?limit=24 observed 2026-10-06: compute.wasm.v1 uses inline_module,
     // not a package named wasm. Substitute only the demo identity for this mapping check.
@@ -647,7 +766,7 @@ describe('sorting, details and change highlights', () => {
     expect(item.querySelector('.service-availability')!.textContent).toBe('Check expired');
     expect(item.querySelector<HTMLElement>('.mkt-detail')!.hidden).toBe(false);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(snapshotCalls()).toBe(2);
     const renewed = items().find((row) => row.dataset.key === `${provider}:renewing`)!;
     const button = renewed.querySelector<HTMLButtonElement>('[data-marketplace-toggle]')!;
     const detail = renewed.querySelector<HTMLElement>('.mkt-detail')!;
@@ -729,7 +848,7 @@ describe('availability between snapshot refreshes', () => {
     await vi.advanceTimersByTimeAsync(19_999);
     expect(item.querySelector('.service-availability')!.textContent).toBe('Recently checked');
     await vi.advanceTimersByTimeAsync(1);
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(snapshotCalls()).toBe(1);
     expect(row('expiring')).toBe(item);
     expect(item.querySelector('.service-availability')!.textContent).toBe('Check expired');
     expect(item.querySelector<HTMLElement>('.service-availability')!.dataset).toMatchObject({ ready: 'false', state: 'warn' });
@@ -838,7 +957,7 @@ describe('availability between snapshot refreshes', () => {
     expect(item.querySelector('.service-availability')!.textContent).toBe('Availability not confirmed');
     expect(item.hidden).toBe(true);
     expect(field('recentServices')).toBe('0');
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(snapshotCalls()).toBe(1);
   });
 
   it('expires from current wall time after a forward jump and keeps the snapshot flash baseline current', async () => {
@@ -849,7 +968,7 @@ describe('availability between snapshot refreshes', () => {
     vi.setSystemTime(epoch + 20_000);
     await vi.advanceTimersByTimeAsync(1_000);
     expect($('.service-availability').textContent).toBe('Check expired');
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(snapshotCalls()).toBe(1);
     await respond({ ...body, checkedAt: new Date().toISOString() });
     expect(row('expiring').classList.contains('is-updated')).toBe(false);
     expect($('.service-availability').textContent).toBe('Check expired');
